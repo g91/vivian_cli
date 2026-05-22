@@ -24,7 +24,7 @@ try:
     from .theme      import C, apply_theme
     from .backends   import MemoryBackend, NativeBackend, VmmBackend, SocketDMABackend, list_procs
     from .reader     import UE3Reader, UE4Reader, PatternScanner, find_process_event
-    from .profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE
+    from .profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE, ALL_SIGNATURES, ENGINE_DEFAULTS
     from .codegen    import generate_sdk
     from .bruteforce import BruteForcer
 except ImportError:
@@ -32,7 +32,7 @@ except ImportError:
     from backends   import (MemoryBackend, NativeBackend, VmmBackend,  # type: ignore[no-redef]
                             SocketDMABackend, list_procs)
     from reader     import UE3Reader, UE4Reader, PatternScanner, find_process_event  # type: ignore[no-redef]
-    from profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE  # type: ignore[no-redef]
+    from profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE, ALL_SIGNATURES, ENGINE_DEFAULTS  # type: ignore[no-redef]
     from codegen    import generate_sdk            # type: ignore[no-redef]
     from bruteforce import BruteForcer             # type: ignore[no-redef]
 
@@ -71,6 +71,12 @@ class UESDKGenApp(tk.Tk):
         self._var_tcp_proc   = tk.StringVar(value="UDKGame-Win32-Shipping.exe")
         self._var_tcp_token  = tk.StringVar(value="")
         self._var_vtable_idx = tk.StringVar(value="—")  # ProcessEvent vtable index
+
+        # ── Custom-profile variables ──────────────────────────────────────────
+        self._var_custom_engine   = tk.StringVar(value="UE3")
+        self._var_custom_proc_flt = tk.StringVar()
+        self._var_custom_proc_flt.trace_add("write", lambda *_: self._filter_custom_procs())
+        self._custom_procs: List[Tuple[int, str]] = []
 
         # ── SDK tab variables ─────────────────────────────────────────────
         self._var_sdk_lang   = tk.StringVar(value="cpp")   # cpp|python
@@ -402,9 +408,110 @@ class UESDKGenApp(tk.Tk):
     # ── Brute force tab ──────────────────────────────────────────────────
 
     def _build_bruteforce_tab(self) -> None:
+        # ── Custom Process & Engine Setup (shown only when CUSTOM profile) ──
+        self._custom_frame = ttk.LabelFrame(
+            self._tab_bf, text=" Custom — Process & Engine Setup ")
+        # (not packed here — _load_profile shows/hides it)
+
+        # ── Process list subsection ──────────────────────────────────────
+        cp_lf = ttk.LabelFrame(self._custom_frame, text=" Running Processes ")
+        cp_lf.pack(fill="x", padx=8, pady=(6, 2))
+
+        cp_flt_row = tk.Frame(cp_lf, bg=C["base"])
+        cp_flt_row.pack(fill="x", padx=4, pady=(4, 2))
+        tk.Label(cp_flt_row, text="Filter:", bg=C["base"], fg=C["subtext0"],
+                 font=("Consolas", 8)).pack(side="left")
+        ttk.Entry(cp_flt_row, textvariable=self._var_custom_proc_flt,
+                  width=18).pack(side="left", fill="x", expand=True, padx=(4, 2))
+        ttk.Button(cp_flt_row, text="R", width=3,
+                   command=self._refresh_custom_procs).pack(side="right")
+
+        cp_lb_fr = tk.Frame(cp_lf, bg=C["mantle"])
+        cp_lb_fr.pack(fill="x", padx=4, pady=(0, 4))
+        cp_lb_sb = ttk.Scrollbar(cp_lb_fr, orient="vertical")
+        self._custom_proc_lb = tk.Listbox(
+            cp_lb_fr, height=6,
+            bg=C["mantle"], fg=C["text"],
+            selectbackground=C["blue"], selectforeground=C["base"],
+            font=("Consolas", 9), borderwidth=0, highlightthickness=0,
+            activestyle="none", yscrollcommand=cp_lb_sb.set)
+        cp_lb_sb.config(command=self._custom_proc_lb.yview)
+        self._custom_proc_lb.pack(side="left", fill="x", expand=True)
+        cp_lb_sb.pack(side="right", fill="y")
+        self._custom_proc_lb.bind("<<ListboxSelect>>", self._on_custom_proc_select)
+
+        # ── Engine selection subsection ───────────────────────────────────
+        eng_lf = ttk.LabelFrame(self._custom_frame, text=" Engine Version ")
+        eng_lf.pack(fill="x", padx=8, pady=(2, 2))
+
+        eng_row = tk.Frame(eng_lf, bg=C["base"])
+        eng_row.pack(fill="x", padx=6, pady=4)
+        for val, lbl, col in [
+            ("UE1", "UE1", "#a6e3a1"),
+            ("UE2", "UE2", "#a6da95"),
+            ("UE3", "UE3", "#89b4fa"),
+            ("UE4", "UE4", "#cba6f7"),
+        ]:
+            ttk.Radiobutton(eng_row, text=f"  {lbl}  ",
+                            variable=self._var_custom_engine,
+                            value=val).pack(side="left", padx=4)
+        ttk.Button(eng_lf, text="Apply Engine Defaults (offsets & encoding)",
+                   command=self._apply_engine_defaults).pack(
+                   fill="x", padx=6, pady=(0, 6))
+
+        # ── Signature database scan subsection ────────────────────────────
+        sd_lf = ttk.LabelFrame(
+            self._custom_frame,
+            text=f" Signature Database  ({len(ALL_SIGNATURES)} patterns — UE1 + UE2 + UE3 + UE4) ")
+        sd_lf.pack(fill="both", expand=True, padx=8, pady=(2, 8))
+
+        sd_btn_row = tk.Frame(sd_lf, bg=C["base"])
+        sd_btn_row.pack(fill="x", padx=6, pady=(6, 2))
+        ttk.Button(sd_btn_row, text="Scan All Known Signatures",
+                   style="Accent.TButton",
+                   command=self._scan_all_sigs).pack(side="left", padx=(0, 8))
+        tk.Label(sd_btn_row,
+                 text="Uses Module base / Scan length from Brute Force controls above",
+                 bg=C["base"], fg=C["subtext0"],
+                 font=("Consolas", 8)).pack(side="left")
+
+        # Results treeview
+        sd_tv_fr = tk.Frame(sd_lf, bg=C["mantle"])
+        sd_tv_fr.pack(fill="both", expand=True, padx=6, pady=2)
+        sd_cols = ("engine", "kind", "va", "status")
+        sd_tv_sb = ttk.Scrollbar(sd_tv_fr, orient="vertical")
+        self._sigscan_tv = ttk.Treeview(
+            sd_tv_fr, columns=sd_cols, show="headings", height=9,
+            yscrollcommand=sd_tv_sb.set)
+        sd_tv_sb.config(command=self._sigscan_tv.yview)
+        for col, cw, txt, anch in [
+            ("engine",  90,  "Engine",  "w"),
+            ("kind",    90,  "Kind",    "w"),
+            ("va",      150, "VA",      "e"),
+            ("status",  120, "Status",  "w"),
+        ]:
+            self._sigscan_tv.heading(col, text=txt)
+            self._sigscan_tv.column(col, width=cw, anchor=anch)
+        self._sigscan_tv.tag_configure("found",   foreground=C["green"])
+        self._sigscan_tv.tag_configure("miss",    foreground=C["subtext0"])
+        self._sigscan_tv.tag_configure("pending", foreground=C["yellow"])
+        self._sigscan_tv.pack(side="left", fill="both", expand=True)
+        sd_tv_sb.pack(side="right", fill="y")
+
+        # Apply-VA buttons
+        sd_apply_row = tk.Frame(sd_lf, bg=C["base"])
+        sd_apply_row.pack(fill="x", padx=6, pady=(2, 6))
+        ttk.Button(sd_apply_row, text="\u2192 Set as GObjects VA",
+                   command=lambda: self._sigscan_apply_va("GObjects")).pack(
+                   side="left", padx=(0, 6))
+        ttk.Button(sd_apply_row, text="\u2192 Set as GNames VA",
+                   command=lambda: self._sigscan_apply_va("GNames")).pack(
+                   side="left")
+
         # ── Discovery controls ───────────────────────────────────────────
         top = ttk.LabelFrame(self._tab_bf, text=" Brute Force Discovery ")
         top.pack(fill="x", padx=10, pady=(8, 4))
+        self._bf_top = top  # reference for before= insertion of custom_frame
 
         cfg = tk.Frame(top, bg=C["base"])
         cfg.pack(fill="x", padx=8, pady=(6, 2))
@@ -580,11 +687,17 @@ class UESDKGenApp(tk.Tk):
             self._var_namestroff.set("0x10")
             self._var_64bit.set(False)
             self._set_status(
-                "Custom profile — select a process from the list, then run Brute Force discovery.")
-            self._log("[*] Profile: CUSTOM — brute-force mode")
+                "Custom profile — pick a process, choose an engine, then Scan All Signatures or run Brute Force.")
+            self._log("[*] Profile: CUSTOM — process/engine selection mode")
             self._update_ue_badge("UE3")
             self._nb.select(self._tab_bf)
+            # Show custom panel at the top of the BF tab
+            self._custom_frame.pack(fill="x", padx=10, pady=(8, 4),
+                                    before=self._bf_top)
+            self._refresh_custom_procs()
             return
+        # Hide custom panel for all non-CUSTOM profiles
+        self._custom_frame.pack_forget()
         gobj = prof.get("gobjects_va", 0)
         gnam = prof.get("gnames_va",   0)
         self._var_gobjects.set(  f"0x{gobj:08X}" if gobj else "0x00000000")
@@ -610,6 +723,187 @@ class UESDKGenApp(tk.Tk):
         fg, bg = self._UE_BADGE_COLORS.get(ue_ver, ("#1e1e2e", "#6c7086"))
         self._ue_badge.configure(text=ue_ver, fg=fg, bg=bg)
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # Custom-profile helpers
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def _refresh_custom_procs(self) -> None:
+        """Populate the custom proc listbox.
+
+        If a backend is already attached the process list is queried through it
+        (works for Native, VMM-DMA, and TCP-DMA).  Otherwise falls back to the
+        local Windows snapshot so the list is available before attaching.
+        """
+        if self._backend is not None:
+            procs = self._backend.get_processes()
+            src = "backend"
+        else:
+            procs = list_procs()
+            src = "native snapshot"
+        self._custom_procs = sorted(procs, key=lambda x: x[1].lower())
+        self._filter_custom_procs()
+        self._log(f"[*] Custom proc list refreshed via {src}: {len(procs)} processes")
+
+    def _filter_custom_procs(self) -> None:
+        flt = self._var_custom_proc_flt.get().lower()
+        self._custom_proc_lb.delete(0, "end")
+        for pid, name in self._custom_procs:
+            if not flt or flt in name.lower() or flt in str(pid):
+                self._custom_proc_lb.insert("end", f"[{pid:5d}] {name}")
+
+    def _on_custom_proc_select(self, _event=None) -> None:
+        """Fill process-name fields from the custom panel selection."""
+        sel = self._custom_proc_lb.curselection()
+        if not sel:
+            return
+        line  = self._custom_proc_lb.get(sel[0])
+        parts = line.split("]", 1)
+        if len(parts) < 2:
+            return
+        name = parts[1].strip()
+        self._var_vmm_proc.set(name)
+        self._var_tcp_proc.set(name)
+        # Mirror selection in the native sidebar listbox (best-effort)
+        for i, item in enumerate(self._proc_lb.get(0, "end")):
+            if name.lower() in item.lower():
+                self._proc_lb.selection_clear(0, "end")
+                self._proc_lb.selection_set(i)
+                self._proc_lb.see(i)
+                break
+
+    def _apply_engine_defaults(self) -> None:
+        """Apply name offsets and encoding for the selected engine version."""
+        ue   = self._var_custom_engine.get()
+        defs = ENGINE_DEFAULTS.get(ue, {})
+        if not defs:
+            return
+        self._var_nameoff.set(f"0x{defs['name_field_off']:02X}")
+        self._var_namestroff.set(f"0x{defs['name_str_off']:02X}")
+        self._var_64bit.set(defs.get("is64", False))
+        self._update_ue_badge(ue)
+        self._log(
+            f"[*] Applied {ue} defaults: name_field_off=0x{defs['name_field_off']:02X}  "
+            f"name_str_off=0x{defs['name_str_off']:02X}  "
+            f"is64={defs.get('is64', False)}  "
+            f"encoding={defs.get('name_encoding','ascii')}")
+        self._set_status(f"Engine defaults applied: {ue}")
+
+    def _scan_all_sigs(self) -> None:
+        """Scan the full signature database and stream results into _sigscan_tv."""
+        if not self._check_attached():
+            return
+        try:
+            base = int(self._var_modbase.get(), 16)
+        except Exception:
+            base = 0x00400000
+        try:
+            size = int(self._var_scanlen.get(), 16)
+        except Exception:
+            size = 0x02000000
+
+        # Seed treeview with pending rows (one per signature)
+        self._sigscan_tv.delete(*self._sigscan_tv.get_children())
+        for idx, sig in enumerate(ALL_SIGNATURES):
+            self._sigscan_tv.insert(
+                "", "end", iid=f"sig_{idx}",
+                values=(sig["label"], sig["kind"], "—", "Pending…"),
+                tags=("pending",))
+
+        self._set_status(
+            f"Sig DB scan: {len(ALL_SIGNATURES)} patterns  base=0x{base:08X}+0x{size:08X}…")
+        self._log(
+            f"[*] Sig DB scan: {len(ALL_SIGNATURES)} patterns  "
+            f"base=0x{base:08X}  len=0x{size:08X}")
+
+        def _work() -> None:
+            scanner = PatternScanner(self._backend)
+            results: list = []
+            for idx, sig in enumerate(ALL_SIGNATURES):
+                label     = sig["label"]
+                kind      = sig["kind"]
+                pattern   = sig["pattern"]
+                mask      = sig["mask"]
+                off       = sig["off"]
+                scan_mode = sig["scan_mode"]
+                is64      = sig["is64"]
+                adjust    = sig["adjust"]
+                iid       = f"sig_{idx}"
+
+                self.after(0, lambda m=f"{label} {kind}":
+                           self._set_status(f"Sig DB scan: {m}…"))
+
+                va: Optional[int] = None
+                try:
+                    if scan_mode in ("rip", "rip_deref"):
+                        va = scanner.scan_rip(
+                            base, size, pattern, mask, off,
+                            adjust=adjust, deref=(scan_mode == "rip_deref"))
+                    else:
+                        va = scanner.scan(base, size, pattern, mask, off, is64)
+                except Exception:
+                    pass
+
+                results.append((label, kind, va, is64))
+
+                if va:
+                    va_str = f"0x{va:016X}" if is64 else f"0x{va:08X}"
+
+                    def _ok(i=iid, l=label, k=kind, v=va_str) -> None:
+                        try:
+                            self._sigscan_tv.item(
+                                i, values=(l, k, v, "\u2713 Found"),
+                                tags=("found",))
+                        except Exception:
+                            pass
+                    self.after(0, _ok)
+                else:
+                    def _no(i=iid, l=label, k=kind) -> None:
+                        try:
+                            self._sigscan_tv.item(
+                                i, values=(l, k, "\u2014", "Not found"),
+                                tags=("miss",))
+                        except Exception:
+                            pass
+                    self.after(0, _no)
+
+            self.after(0, lambda: self._on_all_sigs_done(results))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_all_sigs_done(self, results: list) -> None:
+        found = [(lbl, knd, va, is64) for lbl, knd, va, is64 in results if va]
+        total = len(results)
+        if found:
+            self._set_status(
+                f"Sig DB scan complete — {len(found)}/{total} patterns matched")
+            self._log(f"[+] Sig DB scan done — {len(found)}/{total} found:")
+            for lbl, knd, va, is64 in found:
+                va_str = f"0x{va:016X}" if is64 else f"0x{va:08X}"
+                self._log(f"    [{lbl:<12s}] {knd:<10s} \u2192 {va_str}")
+        else:
+            self._set_status("Sig DB scan complete — no patterns matched")
+            self._log("[!] Sig DB scan — no patterns found in scan range; "
+                      "verify module base / length")
+
+    def _sigscan_apply_va(self, kind: str) -> None:
+        """Copy the VA from the selected sig-scan row into GObjects or GNames field."""
+        sel = self._sigscan_tv.selection()
+        if not sel:
+            messagebox.showinfo("No selection",
+                "Select a row in the Signature Database results first.")
+            return
+        vals = self._sigscan_tv.item(sel[0], "values")
+        if not vals or len(vals) < 3 or vals[2] in ("—", ""):
+            messagebox.showinfo("No VA", "Selected row has no found address.")
+            return
+        va_str = vals[2]
+        if kind == "GObjects":
+            self._var_gobjects.set(va_str)
+            self._log(f"[+] GObjects VA \u2190 {va_str}  (from sig DB scan)")
+        else:
+            self._var_gnames.set(va_str)
+            self._log(f"[+] GNames VA \u2190 {va_str}  (from sig DB scan)")
+        self._set_status(f"{kind} VA set to {va_str}")
 
     # ═══════════════════════════════════════════════════════════════════════
     # Connection

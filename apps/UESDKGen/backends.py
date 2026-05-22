@@ -100,6 +100,11 @@ class MemoryBackend(abc.ABC):
     def rptr(self, a: int, is64: bool) -> Optional[int]:
         return self.ru64(a) if is64 else self.ru32(a)
 
+    def get_processes(self) -> List[Tuple[int, str]]:
+        """Return [(pid, exe_name), ...] for all processes visible through this backend.
+        Subclasses that can enumerate remote processes should override this."""
+        return []
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Native back-end  (ReadProcessMemory)
@@ -132,6 +137,9 @@ class NativeBackend(MemoryBackend):
         if self._h:
             _k32.CloseHandle(self._h)
             self._h = None
+
+    def get_processes(self) -> List[Tuple[int, str]]:
+        return list_procs()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -179,6 +187,13 @@ class VmmBackend(MemoryBackend):
             self._dma.disconnect()
         except Exception:
             pass
+
+    def get_processes(self) -> List[Tuple[int, str]]:
+        """Enumerate processes via memprocfs DMA device."""
+        try:
+            return [(p.pid, p.name) for p in self._dma.enumerate_processes()]
+        except Exception:
+            return []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -269,3 +284,11 @@ class SocketDMABackend(MemoryBackend):
 
     def close(self) -> None:
         pass  # server stays up; session cleanup handled server-side
+
+    def get_processes(self) -> List[Tuple[int, str]]:
+        """Enumerate processes from the MemEdit TCP server."""
+        try:
+            data = self._get("/api/processes").get("processes", [])
+            return [(int(p.get("pid", 0)), str(p.get("name", ""))) for p in data]
+        except Exception:
+            return []

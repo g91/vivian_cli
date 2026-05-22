@@ -699,3 +699,49 @@ for _pkey, _peval in _PE_MAP.items():
     if _pkey in GAME_PROFILES:
         GAME_PROFILES[_pkey].update(_peval)
 del _pkey, _peval
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Engine-level defaults — used by "Apply Engine Defaults" in the Custom panel.
+# ─────────────────────────────────────────────────────────────────────────────
+ENGINE_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "UE1": _OFF_UE1,
+    "UE2": _OFF_UE2,
+    "UE3": _OFF32,
+    "UE4": _OFF_UE4,
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Complete signature database — all distinct patterns with engine labels.
+# Used by "Scan All Known Signatures" in the Custom panel.
+# Fields: label, kind ("GObjects"|"GNames"), pattern, mask, off,
+#         scan_mode ("deref"|"rip"|"rip_deref"), is64, adjust
+# ─────────────────────────────────────────────────────────────────────────────
+ALL_SIGNATURES: list = [
+    # ── UE1 ──────────────────────────────────────────────────────────────
+    {"label": "UE1",       "kind": "GObjects", "pattern": _P_UE1_GOBJ, "mask": _P_UE1_GOBJ_MASK, "off": _P_UE1_GOBJ_OFF, "scan_mode": "deref",     "is64": False, "adjust": 0},
+    {"label": "UE1",       "kind": "GNames",   "pattern": _P_UE1_GNAM, "mask": _P_UE1_GNAM_MASK, "off": _P_UE1_GNAM_OFF, "scan_mode": "deref",     "is64": False, "adjust": 0},
+    # ── UE2 ──────────────────────────────────────────────────────────────
+    {"label": "UE2",       "kind": "GObjects", "pattern": _P_UE2_GOBJ, "mask": _P_UE2_GOBJ_MASK, "off": _P_UE2_GOBJ_OFF, "scan_mode": "deref",     "is64": False, "adjust": 0},
+    {"label": "UE2",       "kind": "GNames",   "pattern": _P_UE1_GNAM, "mask": _P_UE1_GNAM_MASK, "off": _P_UE1_GNAM_OFF, "scan_mode": "deref",     "is64": False, "adjust": 0},
+    # ── UE3 Pattern 1  (Section 8, BL2, RL, most UE3 titles) ─────────────
+    {"label": "UE3/P1",    "kind": "GObjects", "pattern": _P1_GOBJ,    "mask": _P1_GOBJ_MASK,    "off": _P1_GOBJ_OFF,    "scan_mode": "deref",     "is64": False, "adjust": 0},
+    {"label": "UE3/P1",    "kind": "GNames",   "pattern": _P1_GNAM,    "mask": _P1_GNAM_MASK,    "off": _P1_GNAM_OFF,    "scan_mode": "deref",     "is64": False, "adjust": 0},
+    # ── UE3 Pattern 2  (APB, Hawken, TribesAscend, ME3) ──────────────────
+    {"label": "UE3/P2",    "kind": "GObjects", "pattern": _P2_GOBJ,    "mask": _P2_GOBJ_MASK,    "off": _P2_GOBJ_OFF,    "scan_mode": "deref",     "is64": False, "adjust": 0},
+    {"label": "UE3/P2",    "kind": "GNames",   "pattern": _P2_GNAM,    "mask": _P2_GNAM_MASK,    "off": _P2_GNAM_OFF,    "scan_mode": "deref",     "is64": False, "adjust": 0},
+    # ── UE4  Fortnite / PUBG ─────────────────────────────────────────────
+    {"label": "UE4/FN",    "kind": "GObjects", "pattern": _P_FN_GOBJ,  "mask": _P_FN_GOBJ_MASK,  "off": _P_FN_GOBJ_OFF,  "scan_mode": "rip",       "is64": True,  "adjust": 0},
+    {"label": "UE4/FN",    "kind": "GNames",   "pattern": _P_FN_GNAM,  "mask": _P_FN_GNAM_MASK,  "off": _P_FN_GNAM_OFF,  "scan_mode": "rip_deref", "is64": True,  "adjust": 0},
+    # ── UE4  ARK: Survival Evolved ───────────────────────────────────────
+    {"label": "UE4/ARK",   "kind": "GObjects", "pattern": _P_ARK_GOBJ, "mask": _P_ARK_GOBJ_MASK, "off": _P_ARK_GOBJ_OFF, "scan_mode": "rip",       "is64": True,  "adjust": 0},
+    {"label": "UE4/ARK",   "kind": "GNames",   "pattern": _P_ARK_GNAM, "mask": _P_ARK_GNAM_MASK, "off": _P_ARK_GNAM_OFF, "scan_mode": "rip_deref", "is64": True,  "adjust": 12},
+    # ── UE4  Alone in the Dark: Illumination ─────────────────────────────
+    {"label": "UE4/AITD",  "kind": "GObjects", "pattern": _P_AITD_GOBJ, "mask": _P_AITD_GOBJ_MASK, "off": _P_AITD_GOBJ_OFF, "scan_mode": "rip",      "is64": True, "adjust": 0},
+    {"label": "UE4/AITD",  "kind": "GNames",   "pattern": _P_AITD_GNAM, "mask": _P_AITD_GNAM_MASK, "off": _P_AITD_GNAM_OFF, "scan_mode": "rip_deref","is64": True, "adjust": 5},
+    # ── UE4  Paragon ──────────────────────────────────────────────────────
+    {"label": "UE4/PAR",   "kind": "GObjects", "pattern": _P_PAR_GOBJ, "mask": _P_PAR_GOBJ_MASK, "off": _P_PAR_GOBJ_OFF, "scan_mode": "rip",       "is64": True,  "adjust": 0},
+    {"label": "UE4/PAR",   "kind": "GNames",   "pattern": _P_PAR_GNAM, "mask": _P_PAR_GNAM_MASK, "off": _P_PAR_GNAM_OFF, "scan_mode": "rip_deref", "is64": True,  "adjust": 0},
+    # ── UE4  Unreal Tournament 4 ─────────────────────────────────────────
+    {"label": "UE4/UT4",   "kind": "GObjects", "pattern": _P_UT4_GOBJ, "mask": _P_UT4_GOBJ_MASK, "off": _P_UT4_GOBJ_OFF, "scan_mode": "rip",       "is64": True,  "adjust": 0},
+    {"label": "UE4/UT4",   "kind": "GNames",   "pattern": _P_UT4_GNAM, "mask": _P_UT4_GNAM_MASK, "off": _P_UT4_GNAM_OFF, "scan_mode": "rip_deref", "is64": True,  "adjust": 0},
+]
