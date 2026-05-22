@@ -79,7 +79,7 @@ Homepage = "https://github.com/g91/vivian_cli"
 Repository = "https://github.com/g91/vivian_cli"
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = [".."]
 include = ["vivian_cli*"]
 exclude = ["*__pycache__*", "*.pyc"]
 

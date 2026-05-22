@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# pip editable install artifacts
+*.egg-link
+pip-wheel-metadata/
+direct_url.json
+
+# Distribution / packaging
+MANIFEST
+.installed.cfg
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Linting / formatting
+.ruff_cache/
+.mypy_cache/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Logs and temp files
+*.log
+*.tmp
+*.bak
+*.swp
+*~
+
+# Vivian runtime data (user-specific, not source)
+.vivian/
+vivian_config.json
+
+# App-specific outputs
+apps/UESDKGen/output/
+apps/UESDKGen/__pycache__/

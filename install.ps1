@@ -117,70 +117,75 @@ Write-Color "[1/6] Checking Python..." "White"
 $pythonCmd = $null
 $pyVer     = $null
 
-# Check py launcher with explicit version first, then generic commands
-$pythonCandidates = @(
-    @{ Cmd = "py";         Args = "-3.12" },
-    @{ Cmd = "py";         Args = "-3.11" },
-    @{ Cmd = "py";         Args = "-3.10" },
-    @{ Cmd = "python3.12"; Args = $null   },
-    @{ Cmd = "python3.11"; Args = $null   },
-    @{ Cmd = "python3.10"; Args = $null   },
-    @{ Cmd = "python3";    Args = $null   },
-    @{ Cmd = "python";     Args = $null   }
-)
+# ── Strategy 1: py --list (fastest, no invocation hang risk) ─────────────────
+$pyLauncher = Get-Command py -ErrorAction SilentlyContinue
+if ($pyLauncher -and $pyLauncher.Source -notlike "*WindowsApps*") {
+    Write-Color "  [DBG] py.exe at $($pyLauncher.Source) — running py --list" "DarkGray"
+    $pyList = & $pyLauncher.Source "--list" 2>&1
+    Write-Color "  [DBG] py --list: $($pyList -join ' | ')" "DarkGray"
+    foreach ($line in $pyList) {
+        if ($line -match "(\d+)\.(\d+)") {
+            $major = [int]$Matches[1]; $minor = [int]$Matches[2]
+            if ($major -ge 3 -and $minor -ge 10) {
+                $pythonCmd = "py -$major.$minor"
+                $pyVer     = "Python $major.$minor (py launcher)"
+                Write-Color "  [DBG] Selected via py --list: Python $major.$minor" "Green"
+                break
+            }
+        }
+    }
+}
 
-foreach ($entry in $pythonCandidates) {
-    $cmd = $entry.Cmd; $arg = $entry.Args
-    $label = if ($arg) { "$cmd $arg" } else { $cmd }
-    Write-Color "  [DBG] Trying: $label" "DarkGray"
-    try {
-        # Resolve full path — skip if not found
+# ── Strategy 2: known install paths (no subprocess invocation needed) ────────
+if (-not $pythonCmd) {
+    $knownPaths = @(
+        "$env:LOCALAPPDATA\Programs\Python\Python314\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe",
+        "$env:ProgramFiles\Python314\python.exe",
+        "$env:ProgramFiles\Python313\python.exe",
+        "$env:ProgramFiles\Python312\python.exe",
+        "$env:ProgramFiles\Python311\python.exe",
+        "$env:ProgramFiles\Python310\python.exe"
+    )
+    foreach ($p in $knownPaths) {
+        if (Test-Path $p) {
+            Write-Color "  [DBG] Found at known path: $p" "DarkGray"
+            if ($p -match "Python(\d)(\d+)\\python\.exe") {
+                $major = [int]$Matches[1]; $minor = [int]$Matches[2]
+                if ($major -ge 3 -and $minor -ge 10) {
+                    $pythonCmd = "`"$p`""; $pyVer = "Python $major.$minor"
+                    Write-Color "  [DBG] Selected: $p" "Green"; break
+                }
+            }
+        }
+    }
+}
+
+# ── Strategy 3: PATH walk with 5s job timeout (fallback) ─────────────────────
+if (-not $pythonCmd) {
+    foreach ($cmd in @("python3.14","python3.13","python3.12","python3.11","python3.10","python3","python")) {
+        Write-Color "  [DBG] Trying PATH: $cmd" "DarkGray"
         $resolved = Get-Command $cmd -ErrorAction SilentlyContinue
-        if (-not $resolved) {
-            Write-Color "  [DBG]   -> not found in PATH, skipping" "DarkGray"
-            continue
-        }
-        Write-Color "  [DBG]   -> resolved: $($resolved.Source)" "DarkGray"
-
-        # Skip Windows Store stubs — they open the Store UI or hang
-        if ($resolved.Source -like "*WindowsApps*") {
-            Write-Color "  [DBG]   -> Windows Store stub, skipping" "DarkYellow"
-            continue
-        }
-
-        # Use the full resolved path to avoid any PATH re-lookup at invocation time
+        if (-not $resolved) { Write-Color "  [DBG]   -> not found" "DarkGray"; continue }
+        if ($resolved.Source -like "*WindowsApps*") { Write-Color "  [DBG]   -> Store stub, skip" "DarkYellow"; continue }
         $exePath = $resolved.Source
-        $verArgs = if ($arg) { @($arg, "--version") } else { @("--version") }
-        Write-Color "  [DBG]   -> invoking (5s timeout): $exePath $($verArgs -join ' ')" "DarkGray"
-
-        # Run in a background job with a 5-second timeout — guards against
-        # broken installs, missing DLLs, or UAC dialogs causing a hang
-        $job = Start-Job -ScriptBlock { param($p, $a); & $p @a 2>&1 } -ArgumentList $exePath, $verArgs
+        Write-Color "  [DBG]   -> $exePath (5s timeout)" "DarkGray"
+        $job = Start-Job -ScriptBlock { param($p); & $p "--version" 2>&1 } -ArgumentList $exePath
         if (-not (Wait-Job $job -Timeout 5)) {
-            Remove-Job $job -Force
-            Write-Color "  [DBG]   -> timed out after 5s, skipping" "DarkYellow"
-            continue
+            Remove-Job $job -Force; Write-Color "  [DBG]   -> timed out, skip" "DarkYellow"; continue
         }
-        $ver = (Receive-Job $job) -join " "
-        Remove-Job $job -ErrorAction SilentlyContinue
-        Write-Color "  [DBG]   -> output:   $ver" "DarkGray"
-
+        $ver = (Receive-Job $job) -join " "; Remove-Job $job -ErrorAction SilentlyContinue
+        Write-Color "  [DBG]   -> $ver" "DarkGray"
         if ($ver -match "Python (\d+)\.(\d+)") {
             $major = [int]$Matches[1]; $minor = [int]$Matches[2]
-            Write-Color "  [DBG]   -> parsed:   $major.$minor" "DarkGray"
             if ($major -ge 3 -and $minor -ge 10) {
-                $pythonCmd = $exePath   # use full path so later steps don't re-lookup
-                $pyVer     = $ver.Trim()
-                Write-Color "  [DBG]   -> SELECTED" "Green"
-                break
-            } else {
-                Write-Color "  [DBG]   -> too old ($major.$minor < 3.10), skipping" "DarkYellow"
+                $pythonCmd = "`"$exePath`""; $pyVer = $ver.Trim()
+                Write-Color "  [DBG]   -> SELECTED" "Green"; break
             }
-        } else {
-            Write-Color "  [DBG]   -> version string not recognised, skipping" "DarkYellow"
         }
-    } catch {
-        Write-Color "  [DBG]   -> exception: $_" "Red"
     }
 }
 
