@@ -494,7 +494,8 @@ GAME_PROFILES: Dict[str, Dict[str, Any]] = {
         "gobjects_va":  0x0,
         "gnames_va":    0x0,
         **_OFF32,
-        "notes": "Unreal Tournament 3. UE3 Pattern1. FNameEntry: uint32_t Index+0x0C unk+wchar_t WideName@0x10.",
+        "name_encoding": "utf-16-le",   # FNameEntry: wchar_t WideName[1024] @ 0x10
+        "notes": "Unreal Tournament 3. UE3 Pattern1. FNameEntry: uint32_t Index+0x0C unk+wchar_t WideName[1024]@0x10. Wide names.",
     },
 
     "UDK": {

@@ -1,0 +1,51 @@
+{
+  "key": "UT3",
+  "name": "Unreal Tournament 3",
+  "ue_version": "UE3",
+  "process": "UT3.exe",
+  "architecture": "x86",
+  "gobj_layout": "tarray",
+  "gnam_layout": "tarray",
+  "uobject_offsets": {
+    "vf_table": 0,
+    "internal_index": 4,
+    "unk00": "0x20 bytes",
+    "outer": 44,
+    "name_field_off": 44,
+    "class": 52
+  },
+  "fname_layout": {
+    "index_off": 0,
+    "number_off": 4,
+    "size": 8
+  },
+  "fname_entry_offsets": {
+    "index": 0,
+    "unk00": "0x0C bytes",
+    "name_str": 16,
+    "name_encoding": "utf-16-le",
+    "wide_name_size": 1024,
+    "note": "wchar_t WideName[1024] at offset 0x10 (Windows wchar_t = 2 bytes)"
+  },
+  "gnames_pattern": {
+    "bytes_hex": "8B 0D ?? ?? ?? ?? 83 3C 81 00 74",
+    "mask": "xx????xxxxx",
+    "rel_off": 2,
+    "source": "NamesStore.cpp FindPattern"
+  },
+  "gobjects_pattern": {
+    "bytes_hex": "A1 ?? ?? ?? ?? 8B 00 ?? 8B ?? ?? 25 ?? 02 00 00",
+    "mask": "x????x??x??xxxxx",
+    "rel_off": 1,
+    "source": "ObjectsStore.cpp FindPattern"
+  },
+  "scan_mode": "deref",
+  "engine_source": "Target/UnrealTournament3/",
+  "source_files": [
+    "Target/UnrealTournament3/NamesStore.cpp",
+    "Target/UnrealTournament3/ObjectsStore.cpp",
+    "Target/UnrealTournament3/EngineClasses.hpp",
+    "Target/UnrealTournament3/Generator.cpp"
+  ],
+  "notes": "UT3 version 2.1. Wide-character names (utf-16-le). FNameEntry layout: Index(4)+unk[0x0C]+wchar_t WideName[1024]. GObjects and GNames are TArray<T*>. Signature scan mode: standard deref (non-RIP, 32-bit)."
+}

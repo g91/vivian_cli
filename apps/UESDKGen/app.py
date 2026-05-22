@@ -23,7 +23,7 @@ from typing import Dict, List, Optional, Tuple
 try:
     from .theme      import C, apply_theme
     from .backends   import MemoryBackend, NativeBackend, VmmBackend, SocketDMABackend, list_procs
-    from .reader     import UE3Reader, PatternScanner
+    from .reader     import UE3Reader, UE4Reader, PatternScanner
     from .profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE
     from .codegen    import generate_sdk
     from .bruteforce import BruteForcer
@@ -31,7 +31,7 @@ except ImportError:
     from theme      import C, apply_theme          # type: ignore[no-redef]
     from backends   import (MemoryBackend, NativeBackend, VmmBackend,  # type: ignore[no-redef]
                             SocketDMABackend, list_procs)
-    from reader     import UE3Reader, PatternScanner       # type: ignore[no-redef]
+    from reader     import UE3Reader, UE4Reader, PatternScanner       # type: ignore[no-redef]
     from profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE  # type: ignore[no-redef]
     from codegen    import generate_sdk            # type: ignore[no-redef]
     from bruteforce import BruteForcer             # type: ignore[no-redef]
@@ -990,15 +990,31 @@ class UESDKGenApp(tk.Tk):
             f"[*] Sig scan: profile={key}  base=0x{base:08X}  "
             f"len=0x{size:08X}  64bit={is64}")
 
+        ue_ver     = prof.get("ue_version", "UE3")
+        gobj_mode  = prof.get("gobj_scan_mode", "deref")
+        gnam_mode  = prof.get("gnam_scan_mode", "deref")
+        gobj_adj   = prof.get("gobj_adjust", 0)
+        gnam_adj   = prof.get("gnam_adjust", 0)
+
         def _work() -> None:
             scanner = PatternScanner(self._backend)
             gobj_va = gnam_va = None
-            if gobj_pat:
-                self.after(0, lambda: self._set_status("Sig scan: scanning for GObjects…"))
-                gobj_va = scanner.scan(base, size, gobj_pat, gobj_mask, gobj_off, is64)
-            if gnam_pat:
-                self.after(0, lambda: self._set_status("Sig scan: scanning for GNames…"))
-                gnam_va = scanner.scan(base, size, gnam_pat, gnam_mask, gnam_off, is64)
+            if ue_ver == "UE4":
+                if gobj_pat:
+                    self.after(0, lambda: self._set_status("Sig scan: scanning for GObjects (RIP)…"))
+                    gobj_va = scanner.scan_rip(base, size, gobj_pat, gobj_mask, gobj_off,
+                                               adjust=gobj_adj, deref=(gobj_mode != "rip"))
+                if gnam_pat:
+                    self.after(0, lambda: self._set_status("Sig scan: scanning for GNames (RIP)…"))
+                    gnam_va = scanner.scan_rip(base, size, gnam_pat, gnam_mask, gnam_off,
+                                               adjust=gnam_adj, deref=(gnam_mode == "rip_deref"))
+            else:
+                if gobj_pat:
+                    self.after(0, lambda: self._set_status("Sig scan: scanning for GObjects…"))
+                    gobj_va = scanner.scan(base, size, gobj_pat, gobj_mask, gobj_off, is64)
+                if gnam_pat:
+                    self.after(0, lambda: self._set_status("Sig scan: scanning for GNames…"))
+                    gnam_va = scanner.scan(base, size, gnam_pat, gnam_mask, gnam_off, is64)
             self.after(0, lambda: self._on_sigscan_done(gobj_va, gnam_va))
 
         threading.Thread(target=_work, daemon=True).start()

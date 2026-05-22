@@ -151,8 +151,17 @@ class UE3Reader:
         raw = self.backend.read(va, max_chars)
         if not raw:
             return None
-        end = raw.find(b"\x00")
-        raw = raw[:end] if end >= 0 else raw
+        if self.name_encoding == "utf-16-le":
+            # Find the 2-byte null terminator on an even boundary
+            end = -1
+            for i in range(0, len(raw) - 1, 2):
+                if raw[i] == 0 and raw[i + 1] == 0:
+                    end = i
+                    break
+            raw = raw[:end] if end >= 0 else raw
+        else:
+            end = raw.find(b"\x00")
+            raw = raw[:end] if end >= 0 else raw
         return raw.decode(self.name_encoding, errors="replace")
 
     # ── public API ────────────────────────────────────────────────────────
