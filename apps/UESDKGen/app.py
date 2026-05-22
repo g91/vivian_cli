@@ -23,7 +23,7 @@ from typing import Dict, List, Optional, Tuple
 try:
     from .theme      import C, apply_theme
     from .backends   import MemoryBackend, NativeBackend, VmmBackend, SocketDMABackend, list_procs
-    from .reader     import UE3Reader
+    from .reader     import UE3Reader, PatternScanner
     from .profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE
     from .codegen    import generate_sdk
     from .bruteforce import BruteForcer
@@ -31,7 +31,7 @@ except ImportError:
     from theme      import C, apply_theme          # type: ignore[no-redef]
     from backends   import (MemoryBackend, NativeBackend, VmmBackend,  # type: ignore[no-redef]
                             SocketDMABackend, list_procs)
-    from reader     import UE3Reader               # type: ignore[no-redef]
+    from reader     import UE3Reader, PatternScanner       # type: ignore[no-redef]
     from profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE  # type: ignore[no-redef]
     from codegen    import generate_sdk            # type: ignore[no-redef]
     from bruteforce import BruteForcer             # type: ignore[no-redef]
@@ -250,7 +250,9 @@ class UESDKGenApp(tk.Tk):
         ttk.Checkbutton(cb_row, text="64-bit process",
                         variable=self._var_64bit).pack(side="left")
         ttk.Button(of, text="Auto-detect name offset",
-                   command=self._auto_detect).pack(fill="x", padx=6, pady=(0, 6))
+                   command=self._auto_detect).pack(fill="x", padx=6, pady=(0, 4))
+        ttk.Button(of, text="Scan Signatures \u2192 update VAs",
+                   command=self._scan_signatures).pack(fill="x", padx=6, pady=(0, 6))
 
         # Actions
         af = ttk.LabelFrame(p, text=" Actions ")
@@ -927,6 +929,83 @@ class UESDKGenApp(tk.Tk):
             messagebox.showinfo("Auto-detect",
                 f"Detected NameIndex field offset: {off:#04x}\n"
                 "Field updated.")
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Signature scan — find current GObjects/GNames VAs via byte patterns
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def _scan_signatures(self) -> None:
+        """Scan memory using the profile's byte-pattern signatures to locate
+        the current GObjects/GNames VAs (works even when static VAs are stale).
+        """
+        if not self._check_attached():
+            return
+        key  = self._var_profile.get()
+        prof = GAME_PROFILES.get(key, {})
+        gobj_pat  = prof.get("gobj_pattern")
+        gobj_mask = prof.get("gobj_mask", "")
+        gobj_off  = prof.get("gobj_off",  0)
+        gnam_pat  = prof.get("gnam_pattern")
+        gnam_mask = prof.get("gnam_mask", "")
+        gnam_off  = prof.get("gnam_off",  0)
+
+        if not gobj_pat and not gnam_pat:
+            messagebox.showinfo(
+                "No signatures",
+                f"Profile '{key}' has no byte-pattern signatures.\n"
+                "Use Brute Force Discovery to scan for unknown VAs.")
+            return
+
+        # Use scan range from BF tab if already set, otherwise use defaults
+        try:
+            base = int(getattr(self, "_var_modbase", None).get(), 16)  # type: ignore[union-attr]
+        except Exception:
+            base = 0x00400000
+        try:
+            size = int(getattr(self, "_var_scanlen", None).get(), 16)  # type: ignore[union-attr]
+        except Exception:
+            size = 0x02000000
+
+        is64 = self._var_64bit.get()
+        self._set_status(f"Sig scan: searching 0x{base:08X}+0x{size:08X}…")
+        self._log(
+            f"[*] Sig scan: profile={key}  base=0x{base:08X}  "
+            f"len=0x{size:08X}  64bit={is64}")
+
+        def _work() -> None:
+            scanner = PatternScanner(self._backend)
+            gobj_va = gnam_va = None
+            if gobj_pat:
+                self.after(0, lambda: self._set_status("Sig scan: scanning for GObjects…"))
+                gobj_va = scanner.scan(base, size, gobj_pat, gobj_mask, gobj_off, is64)
+            if gnam_pat:
+                self.after(0, lambda: self._set_status("Sig scan: scanning for GNames…"))
+                gnam_va = scanner.scan(base, size, gnam_pat, gnam_mask, gnam_off, is64)
+            self.after(0, lambda: self._on_sigscan_done(gobj_va, gnam_va))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_sigscan_done(self, gobj_va: Optional[int],
+                          gnam_va: Optional[int]) -> None:
+        found: List[str] = []
+        if gobj_va:
+            self._var_gobjects.set(f"0x{gobj_va:08X}")
+            found.append(f"GObjects=0x{gobj_va:08X}")
+            self._log(f"[+] Sig scan → GObjects VA = 0x{gobj_va:08X}")
+        else:
+            self._log("[!] Sig scan → GObjects: signature not found")
+        if gnam_va:
+            self._var_gnames.set(f"0x{gnam_va:08X}")
+            found.append(f"GNames=0x{gnam_va:08X}")
+            self._log(f"[+] Sig scan → GNames VA = 0x{gnam_va:08X}")
+        else:
+            self._log("[!] Sig scan → GNames: signature not found")
+        if found:
+            self._set_status("Sig scan done: " + "  ".join(found))
+            self._log("[+] VA fields updated — ready to Dump Names / Dump Objects")
+        else:
+            self._set_status(
+                "Sig scan: nothing found — verify scan range or try Brute Force Discovery")
 
     # ═══════════════════════════════════════════════════════════════════════
     # Brute force / discovery actions
