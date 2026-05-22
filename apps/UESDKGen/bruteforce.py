@@ -1,8 +1,8 @@
-"""bruteforce.py — Automated UE3 GNames/GObjects/offset discovery for UESDKGen.
+"""bruteforce.py — Automated UE1/UE2/UE3/UE4 GNames/GObjects/offset discovery for UESDKGen.
 
 BruteForcer.full_discover()  runs three phases:
   1. Pattern scan   — tries every known signature from GAME_PROFILES
-  2. TArray scan    — finds TArray-shaped triples in memory
+  2. TArray scan    — finds TArray-shaped triples in memory (UE1/UE2/UE3)
   3. Offset brute force — for each candidate pair tries all
      (name_field_off, name_str_off) combinations, scoring them by
      reading back valid ASCII UE3 names.
@@ -15,11 +15,11 @@ from typing import Callable, Dict, List, Optional
 
 try:
     from .backends import MemoryBackend
-    from .reader   import PatternScanner, UE3Reader
+    from .reader   import PatternScanner, UE3Reader, UE4Reader
     from .profiles import GAME_PROFILES
 except ImportError:
     from backends import MemoryBackend   # type: ignore[no-redef]
-    from reader   import PatternScanner, UE3Reader  # type: ignore[no-redef]
+    from reader   import PatternScanner, UE3Reader, UE4Reader  # type: ignore[no-redef]
     from profiles import GAME_PROFILES   # type: ignore[no-redef]
 
 
@@ -44,13 +44,18 @@ def _collect_patterns() -> List[Dict]:
             continue
         seen.add(sig)
         out.append({
-            "label":     f"{key} — {prof['name']}",
-            "gobj_pat":  gop,
-            "gobj_mask": prof["gobj_mask"],
-            "gobj_off":  prof["gobj_off"],
-            "gnam_pat":  gnp,
-            "gnam_mask": prof["gnam_mask"],
-            "gnam_off":  prof["gnam_off"],
+            "label":          f"{key} — {prof['name']}",
+            "gobj_pat":       gop,
+            "gobj_mask":      prof["gobj_mask"],
+            "gobj_off":       prof["gobj_off"],
+            "gnam_pat":       gnp,
+            "gnam_mask":      prof["gnam_mask"],
+            "gnam_off":       prof["gnam_off"],
+            "gobj_scan_mode": prof.get("gobj_scan_mode", "deref"),
+            "gnam_scan_mode": prof.get("gnam_scan_mode", "deref"),
+            "gobj_adjust":    prof.get("gobj_adjust", 0),
+            "gnam_adjust":    prof.get("gnam_adjust", 0),
+            "ue_version":     prof.get("ue_version", "UE3"),
         })
     return out
 
@@ -127,6 +132,38 @@ def _score_gobjects(backend: MemoryBackend, gobjects_va: int,
     return int(valid * 100 // max(tested, 1))
 
 
+def _score_gnames_ue4(backend: MemoryBackend, gnames_va: int,
+                      name_str_off: int = 0x10,
+                      sample: int = 50) -> int:
+    """Return 0-100: % of sampled UE4 chunked GNames entries that decode as printable ASCII."""
+    CHUNK_TABLE_SIZE   = 128
+    ELEMENTS_PER_CHUNK = 16384
+    num_elements = backend.ru32(gnames_va + CHUNK_TABLE_SIZE * 8)
+    if not num_elements or not (64 <= num_elements <= 5_000_000):
+        return 0
+    valid = tested = 0
+    for i in range(min(sample, num_elements)):
+        chunk_idx = i // ELEMENTS_PER_CHUNK
+        within    = i  % ELEMENTS_PER_CHUNK
+        chunk_ptr = backend.rptr(gnames_va + chunk_idx * 8, is64=True)
+        if not chunk_ptr:
+            continue
+        entry_ptr = backend.rptr(chunk_ptr + within * 8, is64=True)
+        if not entry_ptr:
+            continue
+        raw = backend.read(entry_ptr + name_str_off, 64)
+        if not raw:
+            continue
+        end = raw.find(b"\x00")
+        if end < 1:
+            continue
+        name = raw[:end]
+        if all(32 <= b < 128 for b in name) and len(name) >= 2:
+            valid += 1
+        tested += 1
+    return int(valid * 100 // max(tested, 1))
+
+
 # ── BruteForcer ───────────────────────────────────────────────────────────────
 
 class BruteForcer:
@@ -159,25 +196,44 @@ class BruteForcer:
 
         cb(msg, fraction) -- progress callback.
         hit_cb(hit_dict)  -- called immediately on every pattern match (raw, unscored).
-        Returns a list of ``{gobj_va, gnam_va, pattern, source}`` dicts.
+        Returns a list of ``{gobj_va, gnam_va, pattern, source, ue_version}`` dicts.
         """
         found: List[Dict] = []
         n = len(ALL_PATTERNS)
         for i, p in enumerate(ALL_PATTERNS):
             if cb:
                 cb(f"Pattern {i + 1}/{n}: {p['label']}", (i / max(n, 1)) * 0.50)
-            gobj_va = self._scanner.scan(
-                self._base, self._size,
-                p["gobj_pat"], p["gobj_mask"], p["gobj_off"], self._is64)
-            gnam_va = self._scanner.scan(
-                self._base, self._size,
-                p["gnam_pat"], p["gnam_mask"], p["gnam_off"], self._is64)
+
+            ue_ver     = p.get("ue_version", "UE3")
+            gobj_mode  = p.get("gobj_scan_mode", "deref")
+            gnam_mode  = p.get("gnam_scan_mode", "deref")
+            gobj_adj   = p.get("gobj_adjust", 0)
+            gnam_adj   = p.get("gnam_adjust", 0)
+
+            if ue_ver == "UE4":
+                gobj_va = self._scanner.scan_rip(
+                    self._base, self._size,
+                    p["gobj_pat"], p["gobj_mask"], p["gobj_off"],
+                    adjust=gobj_adj, deref=(gobj_mode != "rip"))
+                gnam_va = self._scanner.scan_rip(
+                    self._base, self._size,
+                    p["gnam_pat"], p["gnam_mask"], p["gnam_off"],
+                    adjust=gnam_adj, deref=(gnam_mode == "rip_deref"))
+            else:
+                gobj_va = self._scanner.scan(
+                    self._base, self._size,
+                    p["gobj_pat"], p["gobj_mask"], p["gobj_off"], self._is64)
+                gnam_va = self._scanner.scan(
+                    self._base, self._size,
+                    p["gnam_pat"], p["gnam_mask"], p["gnam_off"], self._is64)
+
             if gobj_va or gnam_va:
                 hit = {
-                    "gobj_va": gobj_va or 0,
-                    "gnam_va": gnam_va or 0,
-                    "pattern": p["label"],
-                    "source":  "pattern",
+                    "gobj_va":    gobj_va or 0,
+                    "gnam_va":    gnam_va or 0,
+                    "pattern":    p["label"],
+                    "source":     "pattern",
+                    "ue_version": ue_ver,
                 }
                 found.append(hit)
                 if hit_cb:
@@ -295,20 +351,41 @@ class BruteForcer:
             if cb:
                 cb(f"Phase 2: Brute-force offsets {i + 1}/{nd}…",
                    0.65 + i / nd * 0.30)
-            offsets = self.brute_offsets(c["gobj_va"], c["gnam_va"], cb)
-            if offsets:
-                result = {
-                    "gobj_va":        c["gobj_va"],
-                    "gnam_va":        c["gnam_va"],
-                    "name_field_off": offsets["name_field_off"],
-                    "name_str_off":   offsets["name_str_off"],
-                    "confidence":     offsets["confidence"],
-                    "pattern":        c["pattern"],
-                    "source":         c["source"],
-                }
-                results.append(result)
-                if hit_cb:
-                    hit_cb(result)
+            ue_ver = c.get("ue_version", "UE3")
+            if ue_ver == "UE4":
+                # Score using chunked GNames reader
+                score = _score_gnames_ue4(self._b, c["gnam_va"],
+                                          name_str_off=0x10, sample=50)
+                if score >= 20:
+                    result = {
+                        "gobj_va":        c["gobj_va"],
+                        "gnam_va":        c["gnam_va"],
+                        "name_field_off": 0x18,
+                        "name_str_off":   0x10,
+                        "confidence":     score,
+                        "pattern":        c["pattern"],
+                        "source":         c["source"],
+                        "ue_version":     "UE4",
+                    }
+                    results.append(result)
+                    if hit_cb:
+                        hit_cb(result)
+            else:
+                offsets = self.brute_offsets(c["gobj_va"], c["gnam_va"], cb)
+                if offsets:
+                    result = {
+                        "gobj_va":        c["gobj_va"],
+                        "gnam_va":        c["gnam_va"],
+                        "name_field_off": offsets["name_field_off"],
+                        "name_str_off":   offsets["name_str_off"],
+                        "confidence":     offsets["confidence"],
+                        "pattern":        c["pattern"],
+                        "source":         c["source"],
+                        "ue_version":     ue_ver,
+                    }
+                    results.append(result)
+                    if hit_cb:
+                        hit_cb(result)
 
         results.sort(key=lambda r: r["confidence"], reverse=True)
         if cb:

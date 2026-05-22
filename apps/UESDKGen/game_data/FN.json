@@ -1,0 +1,47 @@
+{
+  "key": "FN",
+  "name": "Fortnite",
+  "ue_version": "UE4",
+  "process": "FortniteClient-Win64-Shipping.exe",
+  "architecture": "x64",
+  "gobj_layout": "fuobj_chunked",
+  "gnam_layout": "chunked",
+  "uobject_offsets": {
+    "vtable": 0,
+    "object_flags": 8,
+    "internal_index": 12,
+    "class": 16,
+    "name": 24,
+    "outer": 32
+  },
+  "fname_layout": {
+    "comparison_index_off": 0,
+    "number_off": 4,
+    "size": 8
+  },
+  "fname_entry_offsets": {
+    "name_str": 16,
+    "name_encoding": "ascii"
+  },
+  "fuobjectarray_offsets": {
+    "obj_objects_data": 16,
+    "obj_objects_num_elements": 28,
+    "fuobjectitem_size": 24
+  },
+  "gnames_chunked": {
+    "chunk_table_size": 128,
+    "elements_per_chunk": 16384,
+    "num_elements_off_from_base": 1024
+  },
+  "scan_patterns": {
+    "scan_mode": "rip",
+    "gobj_bytes": "48 8D 05 ?? ?? ?? ?? 48 89 01 33 C9 84 D2 41 8B 40 08 49 89 48 10 0F 45 05 ?? ?? ?? ?? FF C0 49 89 48 10 41 89 40 08",
+    "gobj_mask": "xxx????xxxxxxxxxxxxxxxxxx????xxxxxxxxxx",
+    "gobj_rel_off": 3,
+    "gnam_bytes": "48 89 1D ?? ?? ?? ?? 48 8B 5C 24 ?? 48 83 C4 28 C3 48 8B 5C 24 ?? 48 89 05 ?? ?? ?? ?? 48 83 C4 28 C3",
+    "gnam_mask": "xxx????xxxx?xxxxxxxxx?xxx????xxxxx",
+    "gnam_rel_off": 3
+  },
+  "engine_source": "Target/Fortnite/",
+  "notes": "Fortnite (Epic Games). UE4 x64. GObjects=FUObjectArray->TUObjectArray, item stride=0x18. GNames=TStaticIndirectArrayThreadSafeRead."
+}

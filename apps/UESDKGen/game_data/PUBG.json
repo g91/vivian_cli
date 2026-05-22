@@ -1,0 +1,37 @@
+{
+  "key": "PUBG",
+  "name": "PUBG: Battlegrounds",
+  "ue_version": "UE4",
+  "process": "TslGame.exe",
+  "architecture": "x64",
+  "gobj_layout": "fuobj_chunked",
+  "gnam_layout": "chunked",
+  "uobject_offsets": {
+    "vtable": 0,
+    "object_flags": 8,
+    "internal_index": 12,
+    "class": 16,
+    "name": 24,
+    "outer": 32
+  },
+  "fname_entry_offsets": {
+    "name_str": 16,
+    "name_encoding": "ascii"
+  },
+  "fuobjectarray_offsets": {
+    "obj_objects_data": 16,
+    "obj_objects_num_elements": 28,
+    "fuobjectitem_size": 24
+  },
+  "gnames_chunked": {
+    "chunk_table_size": 128,
+    "elements_per_chunk": 16384,
+    "num_elements_off_from_base": 1024
+  },
+  "scan_patterns": {
+    "scan_mode": "rip",
+    "pattern_set": "FN (same as Fortnite)"
+  },
+  "engine_source": "Target/PUBG/",
+  "notes": "PlayerUnknown's Battlegrounds. UE4 x64. Uses same scan patterns as Fortnite."
+}

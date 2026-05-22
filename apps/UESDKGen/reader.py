@@ -58,6 +58,42 @@ class PatternScanner:
             pos += self._CHUNK - overlap
         return None
 
+    def scan_rip(self, base: int, size: int,
+                pattern: bytes, mask: str, rel_off: int = 0,
+                adjust: int = 0, deref: bool = True) -> Optional[int]:
+        """UE4 RIP-relative scan (x64).
+
+        Finds pattern, applies *adjust* to the match VA, then reads the 32-bit
+        RIP displacement at (match+3), computes the target VA as
+        ``match_va + 7 + rip_offset``.
+
+        deref=True  (GNames):   return  *u64(target)
+        deref=False (GObjects): return  target
+        """
+        overlap = len(pattern) - 1
+        end     = base + size
+        pos     = base
+        while pos < end:
+            read_size = min(self._CHUNK, end - pos + overlap)
+            data      = self._backend.read(pos, read_size)
+            if not data:
+                pos += self._CHUNK
+                continue
+            idx = self._match(data, pattern, mask)
+            if idx is not None:
+                match_va = pos + idx + adjust
+                # Read the 32-bit signed RIP displacement
+                raw = self._backend.read(match_va + rel_off, 4)
+                if not raw or len(raw) < 4:
+                    return None
+                rip_disp = struct.unpack_from("<i", raw)[0]
+                target   = match_va + rel_off + 4 + rip_disp
+                if deref:
+                    return self._backend.rptr(target, is64=True)
+                return target
+            pos += self._CHUNK - overlap
+        return None
+
     # private ─────────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -236,3 +272,145 @@ class UE3Reader:
             if len(results) >= 256:
                 break
         return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UE4 memory reader  (x64, RIP-relative patterns)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class UE4Reader:
+    """Back-end-agnostic UE4 GNames / GObjects reader.
+
+    GNames layout — TStaticIndirectArrayThreadSafeRead<FNameEntry,2097152,16384>
+        gnames_va + 0x000 : 128 × u64 chunk pointers
+        gnames_va + 0x400 : int32 NumElements
+
+        To read name at index i:
+            chunk_idx  = i // ELEMENTS_PER_CHUNK
+            within     = i  % ELEMENTS_PER_CHUNK
+            chunk_ptr  = u64(gnames_va + chunk_idx * 8)
+            entry_ptr  = u64(chunk_ptr  + within    * 8)
+            name_str   = str(entry_ptr  + name_str_off)
+
+    GObjects layouts:
+        fuobj_chunked (Fortnite / PUBG / Paragon / UT4):
+            FUObjectArray.ObjObjects (TUObjectArray) at gobjects_va
+            TUObjectArray.Objects  (ptr)  at gobjects_va + 0x10
+            TUObjectArray.NumElems (i32)  at gobjects_va + 0x1C
+            item_i = Objects + i * 0x18,  object_ptr = *u64(item_i)
+
+        fuobj_tarray (ARK / AITD):
+            FUObjectArray.ObjObjects (TArray<UObject*>) at gobjects_va
+            TArray.Data  (ptr)  at gobjects_va + 0x10
+            TArray.Count (i32)  at gobjects_va + 0x18
+            object_ptr = *u64(Data + i * 8)
+    """
+
+    ELEMENTS_PER_CHUNK = 16384
+    CHUNK_TABLE_SIZE   = 128          # (2 097 152 + 16383) // 16384
+
+    def __init__(self,
+                 backend:        MemoryBackend,
+                 gobjects_va:    int = 0,
+                 gnames_va:      int = 0,
+                 name_field_off: int = 0x18,
+                 name_str_off:   int = 0x10,
+                 name_encoding:  str = "ascii",
+                 gobj_layout:    str = "fuobj_chunked") -> None:
+        self.backend        = backend
+        self.gobjects_va    = gobjects_va
+        self.gnames_va      = gnames_va
+        self.name_field_off = name_field_off
+        self.name_str_off   = name_str_off
+        self.name_encoding  = name_encoding
+        self.gobj_layout    = gobj_layout
+
+    # ── GNames ────────────────────────────────────────────────────────────
+
+    def dump_names(self, cb=None, item_cb=None) -> Dict[int, str]:
+        """Read GNames via the chunked TStaticIndirectArray."""
+        # Determine element count
+        num_elements = self.backend.ru32(self.gnames_va + self.CHUNK_TABLE_SIZE * 8)
+        if not num_elements or num_elements > 5_000_000:
+            return {}
+        out: Dict[int, str] = {}
+        for i in range(num_elements):
+            chunk_idx = i // self.ELEMENTS_PER_CHUNK
+            within    = i  % self.ELEMENTS_PER_CHUNK
+            if chunk_idx >= self.CHUNK_TABLE_SIZE:
+                break
+            chunk_ptr = self.backend.rptr(self.gnames_va + chunk_idx * 8, is64=True)
+            if not chunk_ptr:
+                continue
+            entry_ptr = self.backend.rptr(chunk_ptr + within * 8, is64=True)
+            if not entry_ptr:
+                continue
+            raw = self.backend.read(entry_ptr + self.name_str_off, 512)
+            if not raw:
+                continue
+            end = raw.find(b"\x00")
+            raw = raw[:end] if end >= 0 else raw
+            name = raw.decode(self.name_encoding, errors="replace")
+            if name:
+                out[i] = name
+                if item_cb:
+                    item_cb(i, name)
+            if cb and i % 500 == 0:
+                cb(i, num_elements)
+        return out
+
+    # ── GObjects ──────────────────────────────────────────────────────────
+
+    def dump_objects(self, names: Dict[int, str], cb=None, item_cb=None) -> List[Dict]:
+        if self.gobj_layout == "fuobj_chunked":
+            return self._dump_objects_chunked(names, cb, item_cb)
+        return self._dump_objects_tarray(names, cb, item_cb)
+
+    def _dump_objects_chunked(self, names, cb, item_cb) -> List[Dict]:
+        """FUObjectArray + TUObjectArray (Fortnite/PUBG/Paragon/UT4)."""
+        objects_ptr = self.backend.rptr(self.gobjects_va + 0x10, is64=True)
+        num_elems   = self.backend.ru32(self.gobjects_va + 0x1C)
+        if not objects_ptr or not num_elems:
+            return []
+        ITEM_SZ = 0x18
+        out: List[Dict] = []
+        for i in range(num_elems):
+            item_addr  = objects_ptr + i * ITEM_SZ
+            obj_ptr    = self.backend.rptr(item_addr, is64=True)
+            if not obj_ptr:
+                continue
+            ni = self.backend.ru32(obj_ptr + self.name_field_off)
+            if ni is None:
+                continue
+            obj = {"index": i, "ptr": obj_ptr, "name_index": ni,
+                   "name": names.get(ni, f"?{ni}")}
+            out.append(obj)
+            if item_cb:
+                item_cb(obj)
+            if cb and i % 500 == 0:
+                cb(i, num_elems)
+        return out
+
+    def _dump_objects_tarray(self, names, cb, item_cb) -> List[Dict]:
+        """FUObjectArray + TArray<UObject*> (ARK/AITD)."""
+        data_ptr  = self.backend.rptr(self.gobjects_va + 0x10, is64=True)
+        num_elems = self.backend.ru32(self.gobjects_va + 0x18)
+        if not data_ptr or not num_elems:
+            return []
+        out: List[Dict] = []
+        for i in range(num_elems):
+            obj_ptr = self.backend.rptr(data_ptr + i * 8, is64=True)
+            if not obj_ptr:
+                continue
+            ni = self.backend.ru32(obj_ptr + self.name_field_off)
+            if ni is None:
+                continue
+            obj = {"index": i, "ptr": obj_ptr, "name_index": ni,
+                   "name": names.get(ni, f"?{ni}")}
+            out.append(obj)
+            if item_cb:
+                item_cb(obj)
+            if cb and i % 500 == 0:
+                cb(i, num_elems)
+        return out
+

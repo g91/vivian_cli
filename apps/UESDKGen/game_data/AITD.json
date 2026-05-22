@@ -1,0 +1,43 @@
+{
+  "key": "AITD",
+  "name": "Alone in the Dark: Illumination",
+  "ue_version": "UE4",
+  "process": "AloneInTheDark.exe",
+  "architecture": "x64",
+  "gobj_layout": "fuobj_tarray",
+  "gnam_layout": "chunked",
+  "gnam_adjust": 5,
+  "uobject_offsets": {
+    "vtable": 0,
+    "object_flags": 8,
+    "internal_index": 12,
+    "class": 16,
+    "name": 24,
+    "outer": 32
+  },
+  "fname_entry_offsets": {
+    "name_str": 16,
+    "name_encoding": "ascii"
+  },
+  "fuobjectarray_offsets": {
+    "tarray_data": 16,
+    "tarray_count": 24,
+    "item_size": 8
+  },
+  "gnames_chunked": {
+    "chunk_table_size": 128,
+    "elements_per_chunk": 16384,
+    "num_elements_off_from_base": 1024
+  },
+  "scan_patterns": {
+    "scan_mode": "rip",
+    "gobj_bytes": "48 8D 15 ?? ?? ?? ?? 41 8B F9",
+    "gobj_mask": "xxx????xxx",
+    "gobj_rel_off": 3,
+    "gnam_bytes": "48 8B 5C 24 ?? 48 89 05 ?? ?? ?? ?? 48 83 C4 28 C3",
+    "gnam_mask": "xxxx?xxx????xxxxx",
+    "gnam_rel_off": 3
+  },
+  "engine_source": "Target/AITD/",
+  "notes": "Alone in the Dark: Illumination (Pure FUD Games). UE4 x64. GObjects=FUObjectArray+TArray<UObject*>. GNames pre-adjust=5."
+}

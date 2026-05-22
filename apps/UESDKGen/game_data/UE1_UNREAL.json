@@ -1,0 +1,37 @@
+{
+  "key": "UE1_UNREAL",
+  "name": "Unreal / Unreal Gold",
+  "ue_version": "UE1",
+  "process": "Unreal.exe",
+  "architecture": "x86",
+  "module": "core.dll",
+  "gobj_layout": "tarray",
+  "gnam_layout": "tarray",
+  "uobject_offsets": {
+    "vf_table": 0,
+    "internal_index": 4,
+    "outer": 36,
+    "name": 32,
+    "class": 40
+  },
+  "fname_layout": {
+    "index_only": true,
+    "index_off": 0,
+    "number_off": null
+  },
+  "fname_entry_offsets": {
+    "unk": 12,
+    "name_str": 12,
+    "name_encoding": "utf-16-le"
+  },
+  "scan_patterns": {
+    "gobj_bytes": "8B 0D ?? ?? ?? ?? 8B 04 81 C3 33 C0",
+    "gobj_mask": "xx????xxxxxx",
+    "gobj_rel_off": 2,
+    "gnam_bytes": "A1 ?? ?? ?? ?? 8B 88",
+    "gnam_mask": "x????xx",
+    "gnam_rel_off": 1
+  },
+  "engine_source": "Engine/UE1/",
+  "notes": "First Unreal game (1998). GNames/GObjects both TArray<FNameEntry*>. FName=int32 Index only. FNameEntry: 0x0C padding + wchar_t Data."
+}

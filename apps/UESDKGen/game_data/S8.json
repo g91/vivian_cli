@@ -1,0 +1,39 @@
+{
+  "key": "S8",
+  "name": "Section 8 / Prejudice",
+  "ue_version": "UE3",
+  "process": "S8Game-F.exe",
+  "architecture": "x86",
+  "gobj_layout": "tarray",
+  "gnam_layout": "tarray",
+  "gobjects_va_known": "0x013B9B78",
+  "gnames_va_known": "0x01377868",
+  "uobject_offsets": {
+    "vf_table": 0,
+    "internal_index": 4,
+    "outer": 44,
+    "name": 44,
+    "name_field_off": 44,
+    "class": 48
+  },
+  "fname_layout": {
+    "index_off": 0,
+    "number_off": 4,
+    "size": 8
+  },
+  "fname_entry_offsets": {
+    "name_str": 16,
+    "name_encoding": "ascii"
+  },
+  "scan_patterns": {
+    "pattern_set": "P1",
+    "gobj_bytes": "A1 ?? ?? ?? ?? 8B 00 ?? 8B ?? ?? 25 ?? 02 00 00",
+    "gobj_mask": "x????x??x??xxxxx",
+    "gobj_rel_off": 1,
+    "gnam_bytes": "8B 0D ?? ?? ?? ?? 83 3C 81 00 74",
+    "gnam_mask": "xx????xxxxx",
+    "gnam_rel_off": 2
+  },
+  "engine_source": "Engine/UE3/",
+  "notes": "Section 8 / Section 8: Prejudice. UE3 Pattern1. Known VAs hardcoded."
+}

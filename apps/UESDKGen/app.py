@@ -134,12 +134,17 @@ class UESDKGenApp(tk.Tk):
         pf.pack(fill="x", padx=8, pady=(10, 4))
         profile_cb = ttk.Combobox(pf, textvariable=self._var_profile,
                                    values=PROFILE_KEYS, state="readonly", width=26)
-        profile_cb.pack(padx=6, pady=4, fill="x")
+        profile_cb.pack(padx=6, pady=(4, 2), fill="x")
         # Explicitly set the current item so the text is visible after theme application
         if DEFAULT_PROFILE in PROFILE_KEYS:
             profile_cb.current(PROFILE_KEYS.index(DEFAULT_PROFILE))
         profile_cb.bind("<<ComboboxSelected>>",
                         lambda e: self._load_profile(self._var_profile.get()))
+        # UE version badge
+        self._ue_badge = tk.Label(pf, text="UE3", font=("Consolas", 8, "bold"),
+                                   fg="#1e1e2e", bg="#89b4fa", relief="flat",
+                                   padx=4, pady=1)
+        self._ue_badge.pack(anchor="e", padx=6, pady=(0, 4))
 
         # connection mode
         mf = ttk.LabelFrame(p, text=" Connection Mode ")
@@ -567,6 +572,7 @@ class UESDKGenApp(tk.Tk):
             self._set_status(
                 "Custom profile — select a process from the list, then run Brute Force discovery.")
             self._log("[*] Profile: CUSTOM — brute-force mode")
+            self._update_ue_badge("UE3")
             self._nb.select(self._tab_bf)
             return
         gobj = prof.get("gobjects_va", 0)
@@ -581,6 +587,18 @@ class UESDKGenApp(tk.Tk):
         self._var_tcp_proc.set(proc)
         self._set_status(f"Profile: {prof['name']}  ({prof.get('notes','')})")
         self._log(f"[*] Profile loaded: {key} — {prof['name']}")
+        self._update_ue_badge(prof.get("ue_version", "UE3"))
+
+    _UE_BADGE_COLORS = {
+        "UE1": ("#1e1e2e", "#a6e3a1"),  # green
+        "UE2": ("#1e1e2e", "#a6da95"),  # green-2
+        "UE3": ("#1e1e2e", "#89b4fa"),  # blue
+        "UE4": ("#1e1e2e", "#cba6f7"),  # mauve/purple
+    }
+
+    def _update_ue_badge(self, ue_ver: str) -> None:
+        fg, bg = self._UE_BADGE_COLORS.get(ue_ver, ("#1e1e2e", "#6c7086"))
+        self._ue_badge.configure(text=ue_ver, fg=fg, bg=bg)
 
 
     # ═══════════════════════════════════════════════════════════════════════

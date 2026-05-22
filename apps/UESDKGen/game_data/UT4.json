@@ -1,0 +1,42 @@
+{
+  "key": "UT4",
+  "name": "Unreal Tournament 4 (2016)",
+  "ue_version": "UE4",
+  "process": "UE4Game-Win64-Shipping.exe",
+  "architecture": "x64",
+  "gobj_layout": "fuobj_chunked",
+  "gnam_layout": "chunked",
+  "uobject_offsets": {
+    "vtable": 0,
+    "object_flags": 8,
+    "internal_index": 12,
+    "class": 16,
+    "name": 24,
+    "outer": 32
+  },
+  "fname_entry_offsets": {
+    "name_str": 16,
+    "name_encoding": "ascii"
+  },
+  "fuobjectarray_offsets": {
+    "obj_objects_data": 16,
+    "obj_objects_num_elements": 28,
+    "fuobjectitem_size": 24
+  },
+  "gnames_chunked": {
+    "chunk_table_size": 128,
+    "elements_per_chunk": 16384,
+    "num_elements_off_from_base": 1024
+  },
+  "scan_patterns": {
+    "scan_mode": "rip",
+    "gobj_bytes": "48 8D 0D ?? ?? ?? ?? C6 05",
+    "gobj_mask": "xxx????xx",
+    "gobj_rel_off": 3,
+    "gnam_bytes": "48 8B 1D ?? ?? ?? ?? 48 85 DB 75 35",
+    "gnam_mask": "xxx????xxxxx",
+    "gnam_rel_off": 3
+  },
+  "engine_source": "Target/UT4/",
+  "notes": "Unreal Tournament 4 / UT2016 (free-to-play, Epic). UE4 x64. GNames and GObjects in separate UE4 core DLLs."
+}
