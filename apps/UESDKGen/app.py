@@ -693,22 +693,60 @@ class UESDKGenApp(tk.Tk):
             return
         self._reader = self._make_reader()
         self._set_status("Dumping GNames…")
-        self._log("[*] Dumping GNames…")
+        self._log("[*] Dumping GNames — streaming live…")
+        # Clear table and switch to Names tab immediately so user sees live rows
+        self._names_tv.delete(*self._names_tv.get_children())
+        self._name_count_lbl.config(text="0 names")
+        self._nb.select(self._tab_names)
+
+        _buf: list = []
+        _total = [0]
+        _BATCH = 25
+
+        def _push(batch: list, total: int) -> None:
+            for idx, name in batch:
+                self._names_tv.insert("", "end", values=(idx, name))
+            ch = self._names_tv.get_children()
+            if ch:
+                self._names_tv.see(ch[-1])
+            self._name_count_lbl.config(text=f"{total:,} names")
+            ts = time.strftime("%H:%M:%S")
+            self._log_text.config(state="normal")
+            self._log_text.insert("end",
+                "".join(f"[{ts}]  Name[{idx:05d}]  {name}\n"
+                        for idx, name in batch))
+            self._log_text.see("end")
+            self._log_text.config(state="disabled")
 
         def _work() -> None:
-            def _cb(i: int, n: int) -> None:
+            def _progress(i: int, n: int) -> None:
                 self.after(0, lambda i=i, n=n:
                            self._set_status(f"GNames: {i:,} / {n:,}"))
-            names = self._reader.dump_names(cb=_cb)
+
+            def _item(idx: int, name: str) -> None:
+                _buf.append((idx, name))
+                _total[0] += 1
+                if len(_buf) >= _BATCH:
+                    snap = _buf[:]
+                    _buf.clear()
+                    t = _total[0]
+                    self.after(0, lambda b=snap, c=t: _push(b, c))
+
+            names = self._reader.dump_names(cb=_progress, item_cb=_item)
+            # flush any remaining partial batch
+            if _buf:
+                snap = _buf[:]
+                t = _total[0]
+                self.after(0, lambda b=snap, c=t: _push(b, c))
             self.after(0, lambda: self._on_names_done(names))
 
         threading.Thread(target=_work, daemon=True).start()
 
     def _on_names_done(self, names: Dict[int, str]) -> None:
         self._names = names
-        self._repopulate_names()
+        self._name_count_lbl.config(text=f"{len(names):,} names")
         self._set_status(f"GNames: {len(names):,} entries")
-        self._log(f"[+] GNames: {len(names):,} names loaded")
+        self._log(f"[+] GNames complete \u2014 {len(names):,} names")
         self._nb.select(self._tab_names)
 
     def _repopulate_names(self) -> None:
@@ -736,22 +774,61 @@ class UESDKGenApp(tk.Tk):
                 return
         self._reader = self._make_reader()
         self._set_status("Dumping GObjects…")
-        self._log("[*] Dumping GObjects…")
+        self._log("[*] Dumping GObjects — streaming live…")
+        # Clear table and switch to Objects tab so user sees live rows
+        self._objs_tv.delete(*self._objs_tv.get_children())
+        self._obj_count_lbl.config(text="0 objects")
+        self._nb.select(self._tab_objects)
+
+        _buf: list = []
+        _total = [0]
+        _BATCH = 25
+
+        def _push(batch: list, total: int) -> None:
+            for o in batch:
+                self._objs_tv.insert("", "end", values=(
+                    o["index"], f"0x{o['ptr']:08X}", o["name_index"], o["name"]))
+            ch = self._objs_tv.get_children()
+            if ch:
+                self._objs_tv.see(ch[-1])
+            self._obj_count_lbl.config(text=f"{total:,} objects")
+            ts = time.strftime("%H:%M:%S")
+            self._log_text.config(state="normal")
+            self._log_text.insert("end",
+                "".join(f"[{ts}]  Object[{o['index']:05d}]  0x{o['ptr']:08X}  {o['name']}\n"
+                        for o in batch))
+            self._log_text.see("end")
+            self._log_text.config(state="disabled")
 
         def _work() -> None:
-            def _cb(i: int, n: int) -> None:
+            def _progress(i: int, n: int) -> None:
                 self.after(0, lambda i=i, n=n:
                            self._set_status(f"GObjects: {i:,} / {n:,}"))
-            objs = self._reader.dump_objects(self._names, cb=_cb)
+
+            def _item(obj: dict) -> None:
+                _buf.append(obj)
+                _total[0] += 1
+                if len(_buf) >= _BATCH:
+                    snap = _buf[:]
+                    _buf.clear()
+                    t = _total[0]
+                    self.after(0, lambda b=snap, c=t: _push(b, c))
+
+            objs = self._reader.dump_objects(self._names, cb=_progress, item_cb=_item)
+            # flush any remaining partial batch
+            if _buf:
+                snap = _buf[:]
+                t = _total[0]
+                self.after(0, lambda b=snap, c=t: _push(b, c))
             self.after(0, lambda: self._on_objects_done(objs))
 
         threading.Thread(target=_work, daemon=True).start()
 
     def _on_objects_done(self, objs: List[Dict]) -> None:
         self._objects = objs
-        self._repopulate_objects()
+        self._obj_count_lbl.config(text=f"{len(objs):,} objects")
         self._set_status(f"GObjects: {len(objs):,} objects")
-        self._log(f"[+] GObjects: {len(objs):,} objects loaded")
+        self._log(f"[+] GObjects complete \u2014 {len(objs):,} objects")
         self._nb.select(self._tab_objects)
 
     def _repopulate_objects(self) -> None:
@@ -869,6 +946,8 @@ class UESDKGenApp(tk.Tk):
         is64 = self._var_64bit.get()
         self._bf_progress_var.set(0.0)
         self._bf_progress_msg.set("Starting full discovery…")
+        # Clear results table so live hits appear fresh
+        self._bf_tv.delete(*self._bf_tv.get_children())
 
         def _work() -> None:
             bf = BruteForcer(self._backend, base, size, is64)
@@ -879,7 +958,19 @@ class UESDKGenApp(tk.Tk):
                     self._bf_progress_var.set(round(f * 100, 1)),
                 ))
 
-            results = bf.full_discover(_cb)
+            def _hit_cb(result: dict) -> None:
+                """Called for each scored result as soon as it is ready."""
+                self.after(0, lambda r=result: self._bf_insert_result_live(r))
+
+            def _raw_hit_cb(hit: dict) -> None:
+                """Called for each raw pattern match before scoring."""
+                msg = (f"[scan] Pattern match: "
+                       f"GObj=0x{hit['gobj_va']:08X}  "
+                       f"GNames=0x{hit['gnam_va']:08X}  "
+                       f"[{hit['pattern']}]")
+                self.after(0, lambda m=msg: self._log(m))
+
+            results = bf.full_discover(_cb, hit_cb=_hit_cb, raw_hit_cb=_raw_hit_cb)
             self.after(0, lambda r=results: self._on_bf_discover_done(r))
 
         threading.Thread(target=_work, daemon=True).start()
@@ -932,7 +1023,8 @@ class UESDKGenApp(tk.Tk):
         self._nb.select(self._tab_bf)
 
     def _on_bf_discover_done(self, results: List[Dict]) -> None:
-        """Populate the Discovery Results table with brute-force results."""
+        """Finalize: re-sort and re-populate the results table by confidence."""
+        # Re-populate sorted (live inserts were in discovery order)
         self._bf_tv.delete(*self._bf_tv.get_children())
         for r in results:
             conf = r["confidence"]
@@ -953,6 +1045,24 @@ class UESDKGenApp(tk.Tk):
         self._set_status(f"Discovery: {len(results)} candidate(s) found.")
         self._log(f"[+] Discovery complete: {len(results)} result(s)")
         self._nb.select(self._tab_bf)
+
+    def _bf_insert_result_live(self, r: dict) -> None:
+        """Insert one scored result into the BF table as it arrives."""
+        conf = r["confidence"]
+        tag  = "good" if conf >= 70 else ("medium" if conf >= 40 else "low")
+        self._bf_tv.insert("", "end", tags=(tag,), values=(
+            f"{conf}%",
+            f"0x{r['gobj_va']:08X}",
+            f"0x{r['gnam_va']:08X}",
+            f"0x{r['name_field_off']:02X}",
+            f"0x{r['name_str_off']:02X}",
+            r["pattern"],
+        ))
+        self._log(
+            f"[+] Hit  conf={conf}%  "
+            f"GObj=0x{r['gobj_va']:08X}  GNames=0x{r['gnam_va']:08X}  "
+            f"NameOff=0x{r['name_field_off']:02X}  StrOff=0x{r['name_str_off']:02X}  "
+            f"pattern={r['pattern']}")
 
     def _bf_apply(self) -> None:
         """Apply the selected discovery result row to the sidebar fields."""

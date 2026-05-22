@@ -153,9 +153,12 @@ class BruteForcer:
 
     # ── Phase 1a: known byte-pattern signatures ───────────────────────────
 
-    def scan_patterns(self, cb: Optional[Callable] = None) -> List[Dict]:
+    def scan_patterns(self, cb: Optional[Callable] = None,
+                       hit_cb: Optional[Callable] = None) -> List[Dict]:
         """Try all known byte-pattern signatures extracted from GAME_PROFILES.
 
+        cb(msg, fraction) -- progress callback.
+        hit_cb(hit_dict)  -- called immediately on every pattern match (raw, unscored).
         Returns a list of ``{gobj_va, gnam_va, pattern, source}`` dicts.
         """
         found: List[Dict] = []
@@ -170,12 +173,15 @@ class BruteForcer:
                 self._base, self._size,
                 p["gnam_pat"], p["gnam_mask"], p["gnam_off"], self._is64)
             if gobj_va or gnam_va:
-                found.append({
+                hit = {
                     "gobj_va": gobj_va or 0,
                     "gnam_va": gnam_va or 0,
                     "pattern": p["label"],
                     "source":  "pattern",
-                })
+                }
+                found.append(hit)
+                if hit_cb:
+                    hit_cb(hit)
         return found
 
     # ── Phase 1b: generic TArray scan ────────────────────────────────────
@@ -254,15 +260,20 @@ class BruteForcer:
 
     # ── Full pipeline ─────────────────────────────────────────────────────
 
-    def full_discover(self, cb: Optional[Callable] = None) -> List[Dict]:
+    def full_discover(self, cb: Optional[Callable] = None,
+                       hit_cb: Optional[Callable] = None,
+                       raw_hit_cb: Optional[Callable] = None) -> List[Dict]:
         """Run all three phases.
 
+        cb(msg, fraction)    -- progress callback.
+        hit_cb(result_dict)  -- called immediately for each *scored* result (live feed).
+        raw_hit_cb(hit_dict) -- called on every raw pattern match before scoring.
         Returns a list of result dicts sorted by confidence (best first):
         ``{gobj_va, gnam_va, name_field_off, name_str_off, confidence, pattern, source}``
         """
         if cb:
             cb("Phase 1a: Pattern scan…", 0.0)
-        candidates = self.scan_patterns(cb)
+        candidates = self.scan_patterns(cb, hit_cb=raw_hit_cb)
 
         if cb:
             cb("Phase 1b: TArray scan…", 0.50)
@@ -286,7 +297,7 @@ class BruteForcer:
                    0.65 + i / nd * 0.30)
             offsets = self.brute_offsets(c["gobj_va"], c["gnam_va"], cb)
             if offsets:
-                results.append({
+                result = {
                     "gobj_va":        c["gobj_va"],
                     "gnam_va":        c["gnam_va"],
                     "name_field_off": offsets["name_field_off"],
@@ -294,7 +305,10 @@ class BruteForcer:
                     "confidence":     offsets["confidence"],
                     "pattern":        c["pattern"],
                     "source":         c["source"],
-                })
+                }
+                results.append(result)
+                if hit_cb:
+                    hit_cb(result)
 
         results.sort(key=lambda r: r["confidence"], reverse=True)
         if cb:

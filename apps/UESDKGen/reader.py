@@ -121,8 +121,12 @@ class UE3Reader:
 
     # ── public API ────────────────────────────────────────────────────────
 
-    def dump_names(self, cb=None) -> Dict[int, str]:
-        """Dump GNames; cb(i, total) called every 500 entries."""
+    def dump_names(self, cb=None, item_cb=None) -> Dict[int, str]:
+        """Dump GNames.
+
+        cb(i, total)       -- called every 500 entries (progress bar).
+        item_cb(idx, name) -- called for every valid name found (live feed).
+        """
         data, count = self._tarray(self.gnames_va)
         if not data or not count:
             return {}
@@ -134,12 +138,18 @@ class UE3Reader:
             name = self._read_str(ptr + self.name_str_off)
             if name:
                 out[i] = name
+                if item_cb:
+                    item_cb(i, name)
             if cb and i % 500 == 0:
                 cb(i, count)
         return out
 
-    def dump_objects(self, names: Dict[int, str], cb=None) -> List[Dict]:
-        """Dump GObjects; cb(i, total) called every 500 entries."""
+    def dump_objects(self, names: Dict[int, str], cb=None, item_cb=None) -> List[Dict]:
+        """Dump GObjects.
+
+        cb(i, total) -- called every 500 entries (progress bar).
+        item_cb(obj) -- called for every object found (live feed).
+        """
         data, count = self._tarray(self.gobjects_va)
         if not data or not count:
             return []
@@ -151,12 +161,15 @@ class UE3Reader:
             ni = self.backend.ru32(ptr + self.name_field_off)
             if ni is None:
                 continue
-            out.append({
+            obj = {
                 "index":      i,
                 "ptr":        ptr,
                 "name_index": ni,
                 "name":       names.get(ni, f"?{ni}"),
-            })
+            }
+            out.append(obj)
+            if item_cb:
+                item_cb(obj)
             if cb and i % 500 == 0:
                 cb(i, count)
         return out
