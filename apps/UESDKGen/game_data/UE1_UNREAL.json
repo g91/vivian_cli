@@ -33,5 +33,13 @@
     "gnam_rel_off": 1
   },
   "engine_source": "Engine/UE1/",
+  "process_event": {
+    "pattern_bytes": null,
+    "mask": null,
+    "vtable_scan_limit": 0,
+    "thiscall": true,
+    "extra_null_arg": false,
+    "notes": "Unreal (UE1) uses an inline ProcessEvent stub — no vtable pattern available."
+  },
   "notes": "First Unreal game (1998). GNames/GObjects both TArray<FNameEntry*>. FName=int32 Index only. FNameEntry: 0x0C padding + wchar_t Data."
 }

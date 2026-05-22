@@ -34,5 +34,13 @@
     "gnam_rel_off": 1
   },
   "engine_source": "Engine/UE2/",
+  "process_event": {
+    "pattern_bytes": "A1 ?? ?? ?? ?? 85 C0 53 56 57 8B",
+    "mask": "x????xxxxxx",
+    "vtable_scan_limit": 512,
+    "thiscall": true,
+    "extra_null_arg": true,
+    "notes": "UT2004 UE2 ProcessEvent — takes extra void* nullptr as 4th arg."
+  },
   "notes": "UT2004 (2004). UE2 engine. GObjects pattern has extra trailing RET (C3) byte vs UE1."
 }

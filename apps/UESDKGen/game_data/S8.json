@@ -35,5 +35,13 @@
     "gnam_rel_off": 2
   },
   "engine_source": "Engine/UE3/",
+  "process_event": {
+    "pattern_bytes": "74 ?? 83 C0 07 83 E0 F8 E8 ?? ?? ?? ?? 8B C4",
+    "mask": "x?xxxxxxx????xx",
+    "vtable_scan_limit": 512,
+    "thiscall": true,
+    "extra_null_arg": false,
+    "notes": "Standard UE3 ProcessEvent signature. Vtable index determined at runtime."
+  },
   "notes": "Section 8 / Section 8: Prejudice. UE3 Pattern1. Known VAs hardcoded."
 }

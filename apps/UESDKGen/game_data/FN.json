@@ -43,5 +43,13 @@
     "gnam_rel_off": 3
   },
   "engine_source": "Target/Fortnite/",
+  "process_event": {
+    "pattern_bytes": "45 33 F6 3B 05 ?? ?? ?? ?? 4D 8B E0",
+    "mask": "xxxxx????xxx",
+    "vtable_scan_limit": 512,
+    "thiscall": false,
+    "extra_null_arg": false,
+    "notes": "Fortnite UE4 ProcessEvent — extended pattern with imm32 bounds check."
+  },
   "notes": "Fortnite (Epic Games). UE4 x64. GObjects=FUObjectArray->TUObjectArray, item stride=0x18. GNames=TStaticIndirectArrayThreadSafeRead."
 }

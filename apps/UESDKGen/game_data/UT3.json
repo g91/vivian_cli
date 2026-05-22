@@ -47,5 +47,13 @@
     "Target/UnrealTournament3/EngineClasses.hpp",
     "Target/UnrealTournament3/Generator.cpp"
   ],
+  "process_event": {
+    "pattern_bytes": "74 ?? 83 C0 07 83 E0 F8 E8 ?? ?? ?? ?? 8B C4",
+    "mask": "x?xxxxxxx????xx",
+    "vtable_scan_limit": 640,
+    "thiscall": true,
+    "extra_null_arg": false,
+    "notes": "UE3 ProcessEvent signature. UT3 uses wider vtable scan (0x280 entries)."
+  },
   "notes": "UT3 version 2.1. Wide-character names (utf-16-le). FNameEntry layout: Index(4)+unk[0x0C]+wchar_t WideName[1024]. GObjects and GNames are TArray<T*>. Signature scan mode: standard deref (non-RIP, 32-bit)."
 }

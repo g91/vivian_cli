@@ -38,5 +38,13 @@
     "gnam_rel_off": 3
   },
   "engine_source": "Target/UT4/",
+  "process_event": {
+    "pattern_bytes": "45 33 F6 4D 8B E0",
+    "mask": "xxxxxx",
+    "vtable_scan_limit": 512,
+    "thiscall": false,
+    "extra_null_arg": false,
+    "notes": "UE4 standard ProcessEvent signature."
+  },
   "notes": "Unreal Tournament 4 / UT2016 (free-to-play, Epic). UE4 x64. GNames and GObjects in separate UE4 core DLLs."
 }

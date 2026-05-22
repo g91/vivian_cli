@@ -23,7 +23,7 @@ from typing import Dict, List, Optional, Tuple
 try:
     from .theme      import C, apply_theme
     from .backends   import MemoryBackend, NativeBackend, VmmBackend, SocketDMABackend, list_procs
-    from .reader     import UE3Reader, UE4Reader, PatternScanner
+    from .reader     import UE3Reader, UE4Reader, PatternScanner, find_process_event
     from .profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE
     from .codegen    import generate_sdk
     from .bruteforce import BruteForcer
@@ -31,7 +31,7 @@ except ImportError:
     from theme      import C, apply_theme          # type: ignore[no-redef]
     from backends   import (MemoryBackend, NativeBackend, VmmBackend,  # type: ignore[no-redef]
                             SocketDMABackend, list_procs)
-    from reader     import UE3Reader, UE4Reader, PatternScanner       # type: ignore[no-redef]
+    from reader     import UE3Reader, UE4Reader, PatternScanner, find_process_event  # type: ignore[no-redef]
     from profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE  # type: ignore[no-redef]
     from codegen    import generate_sdk            # type: ignore[no-redef]
     from bruteforce import BruteForcer             # type: ignore[no-redef]
@@ -70,6 +70,7 @@ class UESDKGenApp(tk.Tk):
         self._var_tcp_port   = tk.StringVar(value="8765")
         self._var_tcp_proc   = tk.StringVar(value="UDKGame-Win32-Shipping.exe")
         self._var_tcp_token  = tk.StringVar(value="")
+        self._var_vtable_idx = tk.StringVar(value="—")  # ProcessEvent vtable index
 
         # ── SDK tab variables ─────────────────────────────────────────────
         self._var_sdk_lang   = tk.StringVar(value="cpp")   # cpp|python
@@ -257,7 +258,16 @@ class UESDKGenApp(tk.Tk):
         ttk.Button(of, text="Auto-detect name offset",
                    command=self._auto_detect).pack(fill="x", padx=6, pady=(0, 4))
         ttk.Button(of, text="Scan Signatures \u2192 update VAs",
-                   command=self._scan_signatures).pack(fill="x", padx=6, pady=(0, 6))
+                   command=self._scan_signatures).pack(fill="x", padx=6, pady=(0, 4))
+        ttk.Button(of, text="Find ProcessEvent VTable Index",
+                   command=self._find_process_event).pack(fill="x", padx=6, pady=(0, 4))
+        # result row
+        _pe_row = tk.Frame(of, bg=C["base"])
+        _pe_row.pack(fill="x", padx=6, pady=(0, 6))
+        tk.Label(_pe_row, text="VTable index:", bg=C["base"], fg=C["subtext0"],
+                 font=("Consolas", 8), width=16, anchor="w").pack(side="left")
+        tk.Label(_pe_row, textvariable=self._var_vtable_idx, bg=C["base"],
+                 fg=C["green"], font=("Consolas", 9, "bold")).pack(side="left")
 
         # Actions
         af = ttk.LabelFrame(p, text=" Actions ")
@@ -1040,6 +1050,65 @@ class UESDKGenApp(tk.Tk):
         else:
             self._set_status(
                 "Sig scan: nothing found — verify scan range or try Brute Force Discovery")
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # ProcessEvent VTable index detection
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def _find_process_event(self) -> None:
+        """Walk the vtable of the first live UObject to find ProcessEvent's index."""
+        if not self._check_attached():
+            return
+        key  = self._var_profile.get()
+        prof = GAME_PROFILES.get(key, {})
+        pe_pat   = prof.get("pe_pattern")
+        pe_mask  = prof.get("pe_mask", "")
+        pe_limit = prof.get("pe_scan_limit", 0x200)
+        is64     = prof.get("is64", self._var_64bit.get())
+
+        if not pe_pat:
+            messagebox.showinfo(
+                "No ProcessEvent signature",
+                f"Profile '{key}' has no ProcessEvent pattern.\n"
+                "This game uses an inline stub (no vtable scan possible).")
+            return
+
+        # We need at least one dumped object to get a UObject VA
+        if not self._objects:
+            messagebox.showinfo(
+                "No objects",
+                "Dump Objects first so we have a live UObject VA to read the vtable from.")
+            return
+
+        uobj_va = self._objects[0].get("ptr", 0)
+        if not uobj_va:
+            messagebox.showinfo("No object VA", "First object in list has no ptr field.")
+            return
+
+        self._var_vtable_idx.set("scanning…")
+        self._set_status("VTable scan: walking ProcessEvent signatures…")
+        self._log(
+            f"[*] VTable scan: UObject=0x{uobj_va:X}  limit={pe_limit}  "
+            f"64bit={is64}  pattern={pe_pat.hex(' ')}")
+
+        def _work() -> None:
+            idx = find_process_event(
+                self._backend, uobj_va, pe_pat, pe_mask,
+                pe_scan_limit=pe_limit, is64=is64,
+            )
+            self.after(0, lambda: self._on_vtable_scan_done(idx))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_vtable_scan_done(self, idx: Optional[int]) -> None:
+        if idx is not None:
+            self._var_vtable_idx.set(str(idx))
+            self._set_status(f"ProcessEvent vtable index = {idx}")
+            self._log(f"[+] ProcessEvent vtable index = {idx}")
+        else:
+            self._var_vtable_idx.set("not found")
+            self._set_status("VTable scan: ProcessEvent not found — check profile or dump objects first")
+            self._log("[!] VTable scan: ProcessEvent pattern not matched in vtable")
 
     # ═══════════════════════════════════════════════════════════════════════
     # Brute force / discovery actions

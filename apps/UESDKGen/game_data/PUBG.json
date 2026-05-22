@@ -33,5 +33,13 @@
     "pattern_set": "FN (same as Fortnite)"
   },
   "engine_source": "Target/PUBG/",
+  "process_event": {
+    "pattern_bytes": "45 33 F6 4D 8B E0",
+    "mask": "xxxxxx",
+    "vtable_scan_limit": 512,
+    "thiscall": false,
+    "extra_null_arg": false,
+    "notes": "UE4 standard ProcessEvent — shared with Paragon, UT4, AITD."
+  },
   "notes": "PlayerUnknown's Battlegrounds. UE4 x64. Uses same scan patterns as Fortnite."
 }

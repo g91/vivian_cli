@@ -33,5 +33,13 @@
     "gnam_rel_off": 1
   },
   "engine_source": "Engine/UE2/",
+  "process_event": {
+    "pattern_bytes": "33 F6 89 65 F0 89 4D EC 89 75 FC 0F 31",
+    "mask": "xxxxxxxxxxxxx",
+    "vtable_scan_limit": 512,
+    "thiscall": true,
+    "extra_null_arg": true,
+    "notes": "Unreal 2 UE2 ProcessEvent — RDTSC profiling prologue; takes extra nullptr arg."
+  },
   "notes": "Unreal II: The Awakening (2003). Same patterns as UT2004. UStruct UnknownData00[0x08]."
 }

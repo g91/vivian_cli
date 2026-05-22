@@ -107,6 +107,57 @@ class PatternScanner:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ProcessEvent VTable detection
+# ─────────────────────────────────────────────────────────────────────────────
+
+def find_process_event(
+    backend: MemoryBackend,
+    uobject_va: int,
+    pe_pattern: bytes,
+    pe_mask: str,
+    pe_scan_limit: int = 0x200,
+    is64: bool = False,
+) -> Optional[int]:
+    """Walk the vtable of *uobject_va* to locate ProcessEvent.
+
+    For each vtable slot (up to *pe_scan_limit* entries) the function reads the
+    slot's function pointer, reads the first ``len(pe_pattern) + 32`` bytes at
+    that address, then tries to match *pe_pattern* / *pe_mask*.
+
+    Returns the **0-based vtable index** of the matching slot, or ``None``.
+
+    Args:
+        backend:        An open MemoryBackend with the target process attached.
+        uobject_va:     VA of any live UObject (e.g. the first entry from GObjects).
+        pe_pattern:     Byte pattern that appears at the start of ProcessEvent.
+        pe_mask:        'x'/'?' mask of the same length.
+        pe_scan_limit:  Maximum vtable entries to inspect (not bytes).
+        is64:           True for x64 processes (UE4); pointer size = 8.
+    """
+    if not uobject_va or not pe_pattern:
+        return None
+
+    ptr_sz = 8 if is64 else 4
+    # vtable pointer is at offset 0 of every UObject
+    vtable_ptr = backend.rptr(uobject_va, is64)
+    if not vtable_ptr or vtable_ptr < 0x10000:
+        return None
+
+    plen = len(pe_pattern)
+    for i in range(pe_scan_limit):
+        fn_va = backend.rptr(vtable_ptr + i * ptr_sz, is64)
+        if not fn_va or fn_va < 0x10000:
+            continue
+        data = backend.read(fn_va, plen + 32)
+        if not data or len(data) < plen:
+            continue
+        if PatternScanner._match(data, pe_pattern, pe_mask) is not None:
+            return i
+
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # UE3 memory reader
 # ─────────────────────────────────────────────────────────────────────────────
 

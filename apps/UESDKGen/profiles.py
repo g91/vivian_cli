@@ -134,6 +134,39 @@ _P_UT4_GOBJ_MASK = "xxx????xx"
 _P_UT4_GOBJ_OFF  = 0x3
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ProcessEvent VTable-scan patterns
+# Scanned inside each vtable slot's function body to find ProcessEvent and
+# determine its vtable index.
+# pe_thiscall=True  → 32-bit __thiscall convention (UE1/UE2/UE3)
+# pe_thiscall=False → 64-bit fastcall (UE4)
+# pe_extra_null     → function takes an extra void* nullptr 4th arg (UE2/RL)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# UE3 standard (BL2, Hawken, TA, UT3, RL, S8, and most UE3 titles)
+_P_PE_UE3        = b"\x74\x00\x83\xC0\x07\x83\xE0\xF8\xE8\x00\x00\x00\x00\x8B\xC4"
+_P_PE_UE3_MASK   = "x?xxxxxxx????xx"
+
+# UE4 standard (Paragon, PUBG, UT4, AloneInTheDark)
+_P_PE_UE4_STD      = b"\x45\x33\xF6\x4D\x8B\xE0"
+_P_PE_UE4_STD_MASK = "xxxxxx"
+
+# UE4 ARK: Survival Evolved
+_P_PE_UE4_ARK      = b"\x48\x89\x85\x00\x00\x00\x00\x8B\x41\x08\x33\xFF"
+_P_PE_UE4_ARK_MASK = "xxx????xxxxx"
+
+# UE4 Fortnite
+_P_PE_UE4_FN       = b"\x45\x33\xF6\x3B\x05\x00\x00\x00\x00\x4D\x8B\xE0"
+_P_PE_UE4_FN_MASK  = "xxxxx????xxx"
+
+# UE2 Unreal Tournament 2004
+_P_PE_UE2_UT2004      = b"\xA1\x00\x00\x00\x00\x85\xC0\x53\x56\x57\x8B"
+_P_PE_UE2_UT2004_MASK = "x????xxxxxx"
+
+# UE2 Unreal 2
+_P_PE_UE2_U2      = b"\x33\xF6\x89\x65\xF0\x89\x4D\xEC\x89\x75\xFC\x0F\x31"
+_P_PE_UE2_U2_MASK = "xxxxxxxxxxxxx"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Common struct offsets per UE generation
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -596,3 +629,69 @@ _UE4_KEYS  = sorted(k for k, v in GAME_PROFILES.items() if v.get("ue_version") =
 PROFILE_KEYS = ["S8"] + _UE3_KEYS + _UE1_KEYS + _UE2_KEYS + _UE4_KEYS + ["CUSTOM"]
 
 DEFAULT_PROFILE = "S8"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ProcessEvent vtable detection fields — merged into each profile after the fact
+# so the profile dicts above stay focused on GObjects/GNames scanning.
+#
+# pe_pattern      byte string to match inside a vtable slot's function body
+# pe_mask         'x'/'?' character mask (same length as pe_pattern)
+# pe_scan_limit   maximum vtable entries to walk (as entry count, not byte offset)
+# pe_thiscall     True = 32-bit __thiscall; False = 64-bit fastcall (UE4)
+# pe_extra_null   True = ProcessEvent takes an extra void* nullptr 4th argument
+# ─────────────────────────────────────────────────────────────────────────────
+_PE_NONE      = dict(pe_pattern=None, pe_mask="", pe_scan_limit=0,
+                     pe_thiscall=True, pe_extra_null=False)
+_PE_UE3_200   = dict(pe_pattern=_P_PE_UE3, pe_mask=_P_PE_UE3_MASK,
+                     pe_scan_limit=0x200, pe_thiscall=True, pe_extra_null=False)
+_PE_UE3_280   = dict(pe_pattern=_P_PE_UE3, pe_mask=_P_PE_UE3_MASK,
+                     pe_scan_limit=0x280, pe_thiscall=True, pe_extra_null=False)
+_PE_RL        = dict(pe_pattern=_P_PE_UE3, pe_mask=_P_PE_UE3_MASK,
+                     pe_scan_limit=0x280, pe_thiscall=True, pe_extra_null=True)
+_PE_UE4_STD   = dict(pe_pattern=_P_PE_UE4_STD, pe_mask=_P_PE_UE4_STD_MASK,
+                     pe_scan_limit=0x200, pe_thiscall=False, pe_extra_null=False)
+_PE_UE4_ARK   = dict(pe_pattern=_P_PE_UE4_ARK, pe_mask=_P_PE_UE4_ARK_MASK,
+                     pe_scan_limit=0x200, pe_thiscall=False, pe_extra_null=False)
+_PE_UE4_FN    = dict(pe_pattern=_P_PE_UE4_FN, pe_mask=_P_PE_UE4_FN_MASK,
+                     pe_scan_limit=0x200, pe_thiscall=False, pe_extra_null=False)
+_PE_UT2004    = dict(pe_pattern=_P_PE_UE2_UT2004, pe_mask=_P_PE_UE2_UT2004_MASK,
+                     pe_scan_limit=0x200, pe_thiscall=True, pe_extra_null=True)
+_PE_U2        = dict(pe_pattern=_P_PE_UE2_U2, pe_mask=_P_PE_UE2_U2_MASK,
+                     pe_scan_limit=0x200, pe_thiscall=True, pe_extra_null=True)
+
+_PE_MAP: Dict[str, Dict[str, Any]] = {
+    # UE1 — Unreal has no virtualFunctionPattern (inline only)
+    "UE1_UNREAL": _PE_NONE,
+    # UE2
+    "UE2_UT2004":  _PE_UT2004,
+    "UE2_UNREAL2": _PE_U2,
+    # UE3 standard (scan_limit=0x200)
+    "S8":    _PE_UE3_200, "S9":   _PE_UE3_200, "AA3":  _PE_UE3_200,
+    "BLR":   _PE_UE3_200, "BL2":  _PE_UE3_200, "BR":   _PE_UE3_200,
+    "CC":    _PE_UE3_200, "GA":   _PE_UE3_200, "HF":   _PE_UE3_200,
+    "ME3":   _PE_UE3_200, "ODB":  _PE_UE3_200, "R6V2": _PE_UE3_200,
+    "RD":    _PE_UE3_200, "RO2":  _PE_UE3_200, "SMNC": _PE_UE3_200,
+    "SOTL":  _PE_UE3_200, "ST":   _PE_UE3_200, "TA":   _PE_UE3_200,
+    "TE":    _PE_UE3_200, "UDK":  _PE_UE3_200,
+    # UE3 extended scan (scan_limit=0x280)
+    "UT3":   _PE_UE3_280,
+    # RL uses 0x280 + extra nullptr arg
+    "RL":    _PE_RL,
+    # APB has no virtualFunctionPattern (custom inline fn, no sig)
+    "APB":   _PE_NONE,
+    # UE4
+    "ARK":   _PE_UE4_ARK,
+    "AITD":  _PE_UE4_STD,
+    "FN":    _PE_UE4_FN,
+    "PUBG":  _PE_UE4_STD,
+    "PAR":   _PE_UE4_STD,
+    "UT4":   _PE_UE4_STD,
+    # Brute-force / unknown
+    "CUSTOM": _PE_NONE,
+}
+
+# Merge ProcessEvent detection fields into every profile
+for _pkey, _peval in _PE_MAP.items():
+    if _pkey in GAME_PROFILES:
+        GAME_PROFILES[_pkey].update(_peval)
+del _pkey, _peval

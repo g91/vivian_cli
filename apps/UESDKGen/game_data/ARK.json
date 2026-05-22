@@ -39,5 +39,13 @@
     "gnam_rel_off": 3
   },
   "engine_source": "Target/ARK/",
+  "process_event": {
+    "pattern_bytes": "48 89 85 ?? ?? ?? ?? 8B 41 08 33 FF",
+    "mask": "xxx????xxxxx",
+    "vtable_scan_limit": 512,
+    "thiscall": false,
+    "extra_null_arg": false,
+    "notes": "ARK UE4 ProcessEvent — unique prologue stores parms on stack."
+  },
   "notes": "ARK: Survival Evolved (Studio Wildcard). UE4 x64. GObjects uses TArray<UObject*> layout (not TUObjectArray). GNames pre-adjust=12 bytes before pattern match."
 }

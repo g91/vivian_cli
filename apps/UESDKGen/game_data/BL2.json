@@ -33,5 +33,13 @@
     "gnam_rel_off": 2
   },
   "engine_source": "Engine/UE3/",
+  "process_event": {
+    "pattern_bytes": "74 ?? 83 C0 07 83 E0 F8 E8 ?? ?? ?? ?? 8B C4",
+    "mask": "x?xxxxxxx????xx",
+    "vtable_scan_limit": 512,
+    "thiscall": true,
+    "extra_null_arg": false,
+    "notes": "Standard UE3 ProcessEvent signature."
+  },
   "notes": "Borderlands 2 (Gearbox/2K, 2012). UE3 32-bit. FNameEntry has 0x10 unk prefix then char Name[1024]."
 }
