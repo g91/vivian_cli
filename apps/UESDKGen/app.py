@@ -1300,9 +1300,17 @@ class UESDKGenApp(tk.Tk):
         gobj_adj   = prof.get("gobj_adjust", 0)
         gnam_adj   = prof.get("gnam_adjust", 0)
 
+        def _pat_hex(pat: bytes, msk: str) -> str:
+            """Format pattern+mask as readable hex  e.g. '8B 0D ?? ?? ?? ?? 8B 04 81 C3'."""
+            return " ".join("??" if msk[i] == "?" else f"{pat[i]:02X}"
+                            for i in range(len(pat)))
+
         def _work() -> None:
             scanner = PatternScanner(self._backend)
             gobj_va = gnam_va = None
+            gobj_match_va: Optional[int] = None   # raw match before deref
+            gnam_match_va: Optional[int] = None
+
             if ue_ver == "UE4":
                 if gobj_pat:
                     self.after(0, lambda: self._set_status("Sig scan: scanning for GObjects (RIP)…"))
@@ -1315,10 +1323,76 @@ class UESDKGenApp(tk.Tk):
             else:
                 if gobj_pat:
                     self.after(0, lambda: self._set_status("Sig scan: scanning for GObjects…"))
-                    gobj_va = scanner.scan(base, size, gobj_pat, gobj_mask, gobj_off, is64)
+                    self.after(0, lambda: self._log(
+                        f"[*] Sig scan GObjects pat ({len(gobj_pat)}B): "
+                        f"{_pat_hex(gobj_pat, gobj_mask)}  off=+0x{gobj_off:X}"))
+                    m_va, d_va, scanned, fails = scanner.scan_debug(
+                        base, size, gobj_pat, gobj_mask, gobj_off, is64)
+                    gobj_match_va = m_va
+                    gobj_va       = d_va
+                    self.after(0, lambda m=m_va, d=d_va, s=scanned, f=fails: self._log(
+                        f"[*] Sig scan GObjects: scanned=0x{s:08X}B  read_fails={f}"
+                        + (f"  match_va=0x{m:08X}  deref_va={'0x'+f'{d:08X}' if d else 'None(read failed!)'}"
+                           if m is not None else "  → no match")))
+
                 if gnam_pat:
                     self.after(0, lambda: self._set_status("Sig scan: scanning for GNames…"))
-                    gnam_va = scanner.scan(base, size, gnam_pat, gnam_mask, gnam_off, is64)
+                    self.after(0, lambda: self._log(
+                        f"[*] Sig scan GNames pat ({len(gnam_pat)}B): "
+                        f"{_pat_hex(gnam_pat, gnam_mask)}  off=+0x{gnam_off:X}"))
+                    m_va, d_va, scanned, fails = scanner.scan_debug(
+                        base, size, gnam_pat, gnam_mask, gnam_off, is64)
+                    gnam_match_va = m_va
+                    gnam_va       = d_va
+                    self.after(0, lambda m=m_va, d=d_va, s=scanned, f=fails: self._log(
+                        f"[*] Sig scan GNames: scanned=0x{s:08X}B  read_fails={f}"
+                        + (f"  match_va=0x{m:08X}  deref_va={'0x'+f'{d:08X}' if d else 'None(read failed!)'}"
+                           if m is not None else "  → no match")))
+
+            # ── post-scan diagnostics when GObjects still missing ─────────
+            if gobj_pat and gobj_va is None and ue_ver != "UE4":
+                # 1. If GNames matched, do a near-miss scan in a 256 KB window
+                #    around the GNames match address (both patterns live in the
+                #    same DLL so they should be close together).
+                ref_va = gnam_match_va or (gnam_va or 0)
+                if ref_va:
+                    nm = scanner.near_miss(ref_va, 0x40000, gobj_pat, gobj_mask)
+                    if nm:
+                        nm_va, nm_len = nm
+                        raw = self._backend.read(nm_va, len(gobj_pat) + 4) or b""
+                        raw_hex = raw.hex(" ") if raw else "(read failed)"
+                        self.after(0, lambda v=nm_va, l=nm_len, h=raw_hex, p=len(gobj_pat):
+                                   self._log(
+                                       f"[~] Near-miss around GNames match: "
+                                       f"{l}/{p} bytes match @ 0x{v:08X}  "
+                                       f"bytes=[{h}]"))
+                    else:
+                        self.after(0, lambda: self._log(
+                            "[~] Near-miss scan (256 KB around GNames): "
+                            "even first byte of GObjects pat never found"))
+
+                # 2. If GObjects deref landed on None (match found, bad read),
+                #    try to log what bytes are at the pointer address.
+                if gobj_match_va is not None and gobj_va is None:
+                    raw_ptr = self._backend.read(gobj_match_va + gobj_off, 4) or b""
+                    ptr_hex = raw_ptr.hex(" ") if raw_ptr else "(read failed)"
+                    implied = (int.from_bytes(raw_ptr, "little")
+                               if len(raw_ptr) == 4 else None)
+                    self.after(0, lambda mva=gobj_match_va, ph=ptr_hex, iv=implied:
+                               self._log(
+                                   f"[!] GObjects match @ 0x{mva:08X} but "
+                                   f"ptr bytes=[{ph}] → "
+                                   f"implied VA=0x{iv:08X}" if iv else
+                                   f"[!] GObjects match @ 0x{mva:08X} but ptr bytes=[{ph}]"))
+
+                # 3. Read 32 bytes at the match address so we can inspect what
+                #    actually lives there in memory.
+                if gobj_match_va is not None:
+                    raw_site = self._backend.read(gobj_match_va, len(gobj_pat) + 8) or b""
+                    self.after(0, lambda v=gobj_match_va, h=raw_site.hex(" "):
+                               self._log(
+                                   f"[~] Bytes @ match site 0x{v:08X}: [{h}]"))
+
             self.after(0, lambda: self._on_sigscan_done(gobj_va, gnam_va))
 
         threading.Thread(target=_work, daemon=True).start()

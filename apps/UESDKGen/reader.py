@@ -42,21 +42,71 @@ class PatternScanner:
              pattern: bytes, mask: str, rel_off: int = 0,
              is64: bool = False) -> Optional[int]:
         """Return the dereferenced pointer at the first pattern match, or None."""
+        match_va, deref_va, _, _ = self.scan_debug(base, size, pattern, mask,
+                                                    rel_off, is64)
+        return deref_va
+
+    def scan_debug(self, base: int, size: int,
+                   pattern: bytes, mask: str, rel_off: int = 0,
+                   is64: bool = False) -> Tuple[Optional[int], Optional[int], int, int]:
+        """Like scan() but returns extended debug info.
+
+        Returns
+        -------
+        match_va    : VA of the first byte of the pattern match  (None = not found)
+        deref_va    : *ptr(match_va + rel_off)                   (None = not found / read failed)
+        bytes_scanned : total bytes read successfully from the backend
+        read_fails  : number of backend.read() calls that returned nothing
+        """
         overlap = len(pattern) - 1
         end     = base + size
         pos     = base
+        bytes_scanned = 0
+        read_fails    = 0
         while pos < end:
             read_size = min(self._CHUNK, end - pos + overlap)
             data      = self._backend.read(pos, read_size)
             if not data:
                 pos += self._CHUNK
+                read_fails += 1
                 continue
+            bytes_scanned += len(data)
             idx = self._match(data, pattern, mask)
             if idx is not None:
                 match_va = pos + idx
-                return self._backend.rptr(match_va + rel_off, is64)
+                deref_va = self._backend.rptr(match_va + rel_off, is64)
+                return match_va, deref_va, bytes_scanned, read_fails
             pos += self._CHUNK - overlap
-        return None
+        return None, None, bytes_scanned, read_fails
+
+    def near_miss(self, center_va: int, window: int,
+                  pattern: bytes, mask: str) -> Optional[Tuple[int, int]]:
+        """Scan a small window around *center_va* for the longest prefix of *pattern*.
+
+        Useful for post-failure diagnostics: call after scan_debug() misses, passing
+        a known good VA (e.g. the GNames match) as the center.
+
+        Returns (best_va, best_match_len) or None if the window can't be read.
+        """
+        half    = window // 2
+        read_va = max(0, center_va - half)
+        data    = self._backend.read(read_va, window)
+        if not data:
+            return None
+        plen    = len(pattern)
+        best_va: Optional[int] = None
+        best_len = 0
+        for i in range(len(data)):
+            mlen = 0
+            for j in range(min(plen, len(data) - i)):
+                if mask[j] == "?" or data[i + j] == pattern[j]:
+                    mlen += 1
+                else:
+                    break
+            if mlen > best_len:
+                best_len = mlen
+                best_va  = read_va + i
+        return (best_va, best_len) if best_len > 0 else None
 
     def scan_rip(self, base: int, size: int,
                 pattern: bytes, mask: str, rel_off: int = 0,
