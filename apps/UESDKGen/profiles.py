@@ -39,9 +39,11 @@ _P_UE1_GOBJ      = b"\x8B\x0D\x00\x00\x00\x00\x8B\x04\x81\xC3\x33\xC0"
 _P_UE1_GOBJ_MASK = "xx????xxxxxx"
 _P_UE1_GOBJ_OFF  = 0x2    # 4-byte abs addr at match+2
 
-# UE2: GObjects ends with RET byte too — slightly longer pattern
-_P_UE2_GOBJ      = b"\x8B\x0D\x00\x00\x00\x00\x8B\x04\x81\xC3\x33\xC0\xC3"
-_P_UE2_GOBJ_MASK = "xx????xxxxxxx"
+# UE2: GObjects — stop at the RETN inside GetByIndex; the trailing 33 C0 C3
+# bytes belong to the next function (Num) and may be separated by alignment
+# padding (CC/90 NOPs) in different compiler builds, breaking the match.
+_P_UE2_GOBJ      = b"\x8B\x0D\x00\x00\x00\x00\x8B\x04\x81\xC3"
+_P_UE2_GOBJ_MASK = "xx????xxxx"
 _P_UE2_GOBJ_OFF  = 0x2
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -186,8 +188,10 @@ _OFF_UE1 = dict(
     gnam_adjust    = 0,
 )
 
-# UE2 — 32-bit; same UObject layout as UE1; UStruct has different padding
-_OFF_UE2 = {**_OFF_UE1, "ue_version": "UE2"}
+# UE2 — 32-bit; UObject::Name is at 0x24 (Flags occupies 0x20, not Name).
+# Layout per UT2004 EngineClasses.hpp:
+#   VTable(4) + InternalIndex(4) + UnknownData[20](0x14) + Outer(4) + Flags(4) + Name(4) @ 0x24
+_OFF_UE2 = {**_OFF_UE1, "ue_version": "UE2", "name_field_off": 0x24}
 
 # UE3 — 32-bit; FName = {Index, Number}; name at FNameEntry+0x10 (ASCII or wide)
 # UObject layout: VTable(4)+InternalIndex(4)+Unk(0x20)+Outer(4)+Name(8) @ 0x2C
