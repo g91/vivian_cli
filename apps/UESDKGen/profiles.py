@@ -76,7 +76,7 @@ GAME_PROFILES: Dict[str, Dict[str, Any]] = {
     # ── Section 8 / Section 8: Prejudice  (primary / default) ──────────────
     "S8": {
         "name":         "Section 8 / Prejudice",
-        "process":      "SectionEight-Win32-Shipping.exe",
+        "process":      "S8Game-F.exe",
         "gobj_pattern": _P1_GOBJ,  "gobj_mask": _P1_GOBJ_MASK, "gobj_off": _P1_GOBJ_OFF,
         "gnam_pattern": _P1_GNAM,  "gnam_mask": _P1_GNAM_MASK, "gnam_off": _P1_GNAM_OFF,
         "gobjects_va":  0x013B9B78,
@@ -88,7 +88,7 @@ GAME_PROFILES: Dict[str, Dict[str, Any]] = {
     # ── Section 9 / Prejudice (same binary family) ──────────────────────────
     "S9": {
         "name":         "Section 8: Prejudice",
-        "process":      "SectionEight-Win32-Shipping.exe",
+        "process":      "S8Game-F.exe",
         "gobj_pattern": _P1_GOBJ,  "gobj_mask": _P1_GOBJ_MASK, "gobj_off": _P1_GOBJ_OFF,
         "gnam_pattern": _P1_GNAM,  "gnam_mask": _P1_GNAM_MASK, "gnam_off": _P1_GNAM_OFF,
         "gobjects_va":  0x013B9B78,
