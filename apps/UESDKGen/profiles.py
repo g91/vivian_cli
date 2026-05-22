@@ -169,8 +169,51 @@ _P_PE_UE2_U2      = b"\x33\xF6\x89\x65\xF0\x89\x4D\xEC\x89\x75\xFC\x0F\x31"
 _P_PE_UE2_U2_MASK = "xxxxxxxxxxxxx"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Common struct offsets per UE generation
+# Scan patterns — UE5 (64-bit, FNamePool GNames)
+# GNames: FNamePool — LEA reg, [rip+X]  (different epilogue vs UE4)
+# GObjects: same FChunkedFixedUObjectArray as UE4.21+
 # ─────────────────────────────────────────────────────────────────────────────
+
+# UE5 generic GNames — LEA rdx/rcx, [rip+X] near FNamePool construction
+_P_UE5_GNAM       = b"\x48\x8D\x1D\x00\x00\x00\x00\xEB\x16"
+_P_UE5_GNAM_MASK  = "xxx????xx"
+_P_UE5_GNAM_OFF   = 0x3
+
+# UE5 Fortnite / Palworld / Black Myth GNames variant
+_P_UE5_FN_GNAM       = b"\x48\x89\x15\x00\x00\x00\x00\xC3\x48\x89\x1D"
+_P_UE5_FN_GNAM_MASK  = "xxx????xxxx"
+_P_UE5_FN_GNAM_OFF   = 0x3
+
+# UE5 GObjects — same as UE4 FN pattern (FChunkedFixedUObjectArray)
+_P_UE5_GOBJ       = _P_FN_GOBJ
+_P_UE5_GOBJ_MASK  = _P_FN_GOBJ_MASK
+_P_UE5_GOBJ_OFF   = _P_FN_GOBJ_OFF
+
+# UE5 ProcessEvent — common signature (fastcall, 64-bit)
+_P_PE_UE5_STD      = b"\x45\x33\xF6\x4D\x8B\xE0"
+_P_PE_UE5_STD_MASK = "xxxxxx"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Common struct offsets — UE5
+# ─────────────────────────────────────────────────────────────────────────────
+
+# UE5 — 64-bit; FNamePool GNames; FChunkedFixedUObjectArray GObjects
+# UObject layout: Vtable(8)+Flags(4)+InternalIndex(4)+Class(8)+Name(8) @ 0x18 → Outer(8) @ 0x20
+_OFF_UE5 = dict(
+    ue_version     = "UE5",
+    name_field_off = 0x18,
+    name_str_off   = 0x02,   # FNamePool FNameEntry: uint16 header at +0, string at +2
+    name_encoding  = "ascii",
+    is64           = True,
+    gobj_layout    = "fuobj_chunked",
+    gnam_layout    = "namepool",
+    gobj_scan_mode = "rip",
+    gnam_scan_mode = "rip",
+    gobj_adjust    = 0,
+    gnam_adjust    = 0,
+)
+
+
 
 # UE1 — 32-bit; FName is just Index (int32); name at FNameEntry+0x0C (wchar_t)
 # UObject layout: VTable(4) + InternalIndex(4) + Unk(0x10) + Outer(4) + Unk(4) + Name(4) @ 0x20
@@ -620,17 +663,191 @@ GAME_PROFILES: Dict[str, Dict[str, Any]] = {
         **_OFF_UE4,
         "notes": "Unreal Tournament 4/2016. UE4 x64. GNames in UE4-Core dll, GObjects in UE4-CoreUObject dll.",
     },
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Unreal Engine 4 — additional popular titles
+    # ═══════════════════════════════════════════════════════════════════════
+
+    "HOGWARTS": {
+        "name":         "Hogwarts Legacy (UE4)",
+        "process":      "HogwartsLegacy-Win64-Shipping.exe",
+        "gobj_pattern": _P_FN_GOBJ, "gobj_mask": _P_FN_GOBJ_MASK, "gobj_off": _P_FN_GOBJ_OFF,
+        "gnam_pattern": _P_FN_GNAM, "gnam_mask": _P_FN_GNAM_MASK, "gnam_off": _P_FN_GNAM_OFF,
+        "gobjects_va":  0x0,
+        "gnames_va":    0x0,
+        **_OFF_UE4,
+        "notes": "Hogwarts Legacy (Avalanche/WB). UE4 x64. Standard FN pattern set.",
+    },
+
+    "DBD": {
+        "name":         "Dead by Daylight (UE4)",
+        "process":      "DeadByDaylight-Win64-Shipping.exe",
+        "gobj_pattern": _P_FN_GOBJ, "gobj_mask": _P_FN_GOBJ_MASK, "gobj_off": _P_FN_GOBJ_OFF,
+        "gnam_pattern": _P_FN_GNAM, "gnam_mask": _P_FN_GNAM_MASK, "gnam_off": _P_FN_GNAM_OFF,
+        "gobjects_va":  0x0,
+        "gnames_va":    0x0,
+        **_OFF_UE4,
+        "notes": "Dead by Daylight (Behaviour). UE4 x64.",
+    },
+
+    "VALORANT": {
+        "name":         "VALORANT (UE4)",
+        "process":      "VALORANT-Win64-Shipping.exe",
+        "gobj_pattern": _P_FN_GOBJ, "gobj_mask": _P_FN_GOBJ_MASK, "gobj_off": _P_FN_GOBJ_OFF,
+        "gnam_pattern": _P_FN_GNAM, "gnam_mask": _P_FN_GNAM_MASK, "gnam_off": _P_FN_GNAM_OFF,
+        "gobjects_va":  0x0,
+        "gnames_va":    0x0,
+        **_OFF_UE4,
+        "notes": "VALORANT (Riot Games). UE4 x64. Anti-cheat (Vanguard) — manual VA entry recommended.",
+    },
+
+    "SPLITGATE": {
+        "name":         "Splitgate (UE4)",
+        "process":      "PortalWars-Win64-Shipping.exe",
+        "gobj_pattern": _P_FN_GOBJ, "gobj_mask": _P_FN_GOBJ_MASK, "gobj_off": _P_FN_GOBJ_OFF,
+        "gnam_pattern": _P_FN_GNAM, "gnam_mask": _P_FN_GNAM_MASK, "gnam_off": _P_FN_GNAM_OFF,
+        "gobjects_va":  0x0,
+        "gnames_va":    0x0,
+        **_OFF_UE4,
+        "notes": "Splitgate. UE4 x64.",
+    },
+
+    "BIOMUTANT": {
+        "name":         "Biomutant (UE4)",
+        "process":      "Biomutant-Win64-Shipping.exe",
+        "gobj_pattern": _P_FN_GOBJ, "gobj_mask": _P_FN_GOBJ_MASK, "gobj_off": _P_FN_GOBJ_OFF,
+        "gnam_pattern": _P_FN_GNAM, "gnam_mask": _P_FN_GNAM_MASK, "gnam_off": _P_FN_GNAM_OFF,
+        "gobjects_va":  0x0,
+        "gnames_va":    0x0,
+        **_OFF_UE4,
+        "notes": "Biomutant (Experiment 101). UE4 x64.",
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Unreal Engine 5 (2022+) — 64-bit titles  (FNamePool GNames)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    "FN_UE5": {
+        "name":         "Fortnite Chapter 4+ (UE5)",
+        "process":      "FortniteClient-Win64-Shipping.exe",
+        "gobj_pattern": _P_UE5_GOBJ, "gobj_mask": _P_UE5_GOBJ_MASK, "gobj_off": _P_UE5_GOBJ_OFF,
+        "gnam_pattern": _P_UE5_FN_GNAM, "gnam_mask": _P_UE5_FN_GNAM_MASK, "gnam_off": _P_UE5_FN_GNAM_OFF,
+        "gobjects_va":  0x0,
+        "gnames_va":    0x0,
+        **_OFF_UE5,
+        "notes": "Fortnite Chapter 4+. UE5 x64. FNamePool GNames. FChunkedFixedUObjectArray GObjects.",
+    },
+
+    "PALWORLD": {
+        "name":         "Palworld (UE5)",
+        "process":      "Pal-Win64-Shipping.exe",
+        "gobj_pattern": _P_UE5_GOBJ, "gobj_mask": _P_UE5_GOBJ_MASK, "gobj_off": _P_UE5_GOBJ_OFF,
+        "gnam_pattern": _P_UE5_GNAM,  "gnam_mask": _P_UE5_GNAM_MASK,  "gnam_off": _P_UE5_GNAM_OFF,
+        "gobjects_va":  0x0,
+        "gnames_va":    0x0,
+        **_OFF_UE5,
+        "notes": "Palworld (Pocketpair). UE5 x64.",
+    },
+
+    "BLACK_MYTH": {
+        "name":         "Black Myth: Wukong (UE5)",
+        "process":      "b1-Win64-Shipping.exe",
+        "gobj_pattern": _P_UE5_GOBJ, "gobj_mask": _P_UE5_GOBJ_MASK, "gobj_off": _P_UE5_GOBJ_OFF,
+        "gnam_pattern": _P_UE5_GNAM,  "gnam_mask": _P_UE5_GNAM_MASK,  "gnam_off": _P_UE5_GNAM_OFF,
+        "gobjects_va":  0x0,
+        "gnames_va":    0x0,
+        **_OFF_UE5,
+        "notes": "Black Myth: Wukong (Game Science). UE5 x64.",
+    },
+
+    "MARVEL_RIVALS": {
+        "name":         "Marvel Rivals (UE5)",
+        "process":      "MarvelGame-Win64-Shipping.exe",
+        "gobj_pattern": _P_UE5_GOBJ, "gobj_mask": _P_UE5_GOBJ_MASK, "gobj_off": _P_UE5_GOBJ_OFF,
+        "gnam_pattern": _P_UE5_GNAM,  "gnam_mask": _P_UE5_GNAM_MASK,  "gnam_off": _P_UE5_GNAM_OFF,
+        "gobjects_va":  0x0,
+        "gnames_va":    0x0,
+        **_OFF_UE5,
+        "notes": "Marvel Rivals (NetEase). UE5 x64.",
+    },
+
+    "DEADLOCK": {
+        "name":         "Deadlock (UE5)",
+        "process":      "project8-Win64-Shipping.exe",
+        "gobj_pattern": _P_UE5_GOBJ, "gobj_mask": _P_UE5_GOBJ_MASK, "gobj_off": _P_UE5_GOBJ_OFF,
+        "gnam_pattern": _P_UE5_GNAM,  "gnam_mask": _P_UE5_GNAM_MASK,  "gnam_off": _P_UE5_GNAM_OFF,
+        "gobjects_va":  0x0,
+        "gnames_va":    0x0,
+        **_OFF_UE5,
+        "notes": "Deadlock (Valve). UE5 x64.",
+    },
+
+    "STALKER2": {
+        "name":         "S.T.A.L.K.E.R. 2 (UE5)",
+        "process":      "Stalker2-Win64-Shipping.exe",
+        "gobj_pattern": _P_UE5_GOBJ, "gobj_mask": _P_UE5_GOBJ_MASK, "gobj_off": _P_UE5_GOBJ_OFF,
+        "gnam_pattern": _P_UE5_GNAM,  "gnam_mask": _P_UE5_GNAM_MASK,  "gnam_off": _P_UE5_GNAM_OFF,
+        "gobjects_va":  0x0,
+        "gnames_va":    0x0,
+        **_OFF_UE5,
+        "notes": "S.T.A.L.K.E.R. 2: Heart of Chornobyl (GSC). UE5 x64.",
+    },
+
+    "TEKKEN8": {
+        "name":         "Tekken 8 (UE5)",
+        "process":      "Tekken8-Win64-Shipping.exe",
+        "gobj_pattern": _P_UE5_GOBJ, "gobj_mask": _P_UE5_GOBJ_MASK, "gobj_off": _P_UE5_GOBJ_OFF,
+        "gnam_pattern": _P_UE5_GNAM,  "gnam_mask": _P_UE5_GNAM_MASK,  "gnam_off": _P_UE5_GNAM_OFF,
+        "gobjects_va":  0x0,
+        "gnames_va":    0x0,
+        **_OFF_UE5,
+        "notes": "Tekken 8 (Bandai Namco). UE5 x64.",
+    },
+
+    "LORDS_OF_FALLEN": {
+        "name":         "Lords of the Fallen (UE5)",
+        "process":      "Lords-Win64-Shipping.exe",
+        "gobj_pattern": _P_UE5_GOBJ, "gobj_mask": _P_UE5_GOBJ_MASK, "gobj_off": _P_UE5_GOBJ_OFF,
+        "gnam_pattern": _P_UE5_GNAM,  "gnam_mask": _P_UE5_GNAM_MASK,  "gnam_off": _P_UE5_GNAM_OFF,
+        "gobjects_va":  0x0,
+        "gnames_va":    0x0,
+        **_OFF_UE5,
+        "notes": "Lords of the Fallen 2023 (Hexworks). UE5 x64.",
+    },
+
+    "REMNANT2": {
+        "name":         "Remnant II (UE5)",
+        "process":      "Remnant2-Win64-Shipping.exe",
+        "gobj_pattern": _P_UE5_GOBJ, "gobj_mask": _P_UE5_GOBJ_MASK, "gobj_off": _P_UE5_GOBJ_OFF,
+        "gnam_pattern": _P_UE5_GNAM,  "gnam_mask": _P_UE5_GNAM_MASK,  "gnam_off": _P_UE5_GNAM_OFF,
+        "gobjects_va":  0x0,
+        "gnames_va":    0x0,
+        **_OFF_UE5,
+        "notes": "Remnant II (Gunfire Games). UE5 x64.",
+    },
+
+    "WUKONG_UE5": {
+        "name":         "Black Myth: Wukong Alternate (UE5)",
+        "process":      "b1-Win64-Shipping.exe",
+        "gobj_pattern": _P_UE5_GOBJ, "gobj_mask": _P_UE5_GOBJ_MASK, "gobj_off": _P_UE5_GOBJ_OFF,
+        "gnam_pattern": _P_UE5_FN_GNAM, "gnam_mask": _P_UE5_FN_GNAM_MASK, "gnam_off": _P_UE5_FN_GNAM_OFF,
+        "gobjects_va":  0x0,
+        "gnames_va":    0x0,
+        **_OFF_UE5,
+        "notes": "Black Myth: Wukong — FN-style GNames variant. Try if BLACK_MYTH profile fails.",
+    },
 }
 
 # Ordered list for the UI combo-box
-# UE3 first (S8 as default), then UE1, UE2, UE4, CUSTOM last
+# UE3 first (S8 as default), then UE1, UE2, UE4, UE5, CUSTOM last
 _UE1_KEYS  = sorted(k for k, v in GAME_PROFILES.items() if v.get("ue_version") == "UE1")
 _UE2_KEYS  = sorted(k for k, v in GAME_PROFILES.items() if v.get("ue_version") == "UE2")
 _UE3_KEYS  = sorted(k for k, v in GAME_PROFILES.items()
                     if v.get("ue_version") == "UE3" and k not in ("S8", "CUSTOM"))
 _UE4_KEYS  = sorted(k for k, v in GAME_PROFILES.items() if v.get("ue_version") == "UE4")
+_UE5_KEYS  = sorted(k for k, v in GAME_PROFILES.items() if v.get("ue_version") == "UE5")
 
-PROFILE_KEYS = ["S8"] + _UE3_KEYS + _UE1_KEYS + _UE2_KEYS + _UE4_KEYS + ["CUSTOM"]
+PROFILE_KEYS = ["S8"] + _UE3_KEYS + _UE1_KEYS + _UE2_KEYS + _UE4_KEYS + _UE5_KEYS + ["CUSTOM"]
 
 DEFAULT_PROFILE = "S8"
 
@@ -658,6 +875,8 @@ _PE_UE4_ARK   = dict(pe_pattern=_P_PE_UE4_ARK, pe_mask=_P_PE_UE4_ARK_MASK,
                      pe_scan_limit=0x200, pe_thiscall=False, pe_extra_null=False)
 _PE_UE4_FN    = dict(pe_pattern=_P_PE_UE4_FN, pe_mask=_P_PE_UE4_FN_MASK,
                      pe_scan_limit=0x200, pe_thiscall=False, pe_extra_null=False)
+_PE_UE5_STD   = dict(pe_pattern=_P_PE_UE5_STD, pe_mask=_P_PE_UE5_STD_MASK,
+                     pe_scan_limit=0x200, pe_thiscall=False, pe_extra_null=False)
 _PE_UT2004    = dict(pe_pattern=_P_PE_UE2_UT2004, pe_mask=_P_PE_UE2_UT2004_MASK,
                      pe_scan_limit=0x200, pe_thiscall=True, pe_extra_null=True)
 _PE_U2        = dict(pe_pattern=_P_PE_UE2_U2, pe_mask=_P_PE_UE2_U2_MASK,
@@ -684,12 +903,28 @@ _PE_MAP: Dict[str, Dict[str, Any]] = {
     # APB has no virtualFunctionPattern (custom inline fn, no sig)
     "APB":   _PE_NONE,
     # UE4
-    "ARK":   _PE_UE4_ARK,
-    "AITD":  _PE_UE4_STD,
-    "FN":    _PE_UE4_FN,
-    "PUBG":  _PE_UE4_STD,
-    "PAR":   _PE_UE4_STD,
-    "UT4":   _PE_UE4_STD,
+    "ARK":       _PE_UE4_ARK,
+    "AITD":      _PE_UE4_STD,
+    "FN":        _PE_UE4_FN,
+    "PUBG":      _PE_UE4_STD,
+    "PAR":       _PE_UE4_STD,
+    "UT4":       _PE_UE4_STD,
+    "HOGWARTS":  _PE_UE4_STD,
+    "DBD":       _PE_UE4_STD,
+    "VALORANT":  _PE_UE4_STD,
+    "SPLITGATE": _PE_UE4_STD,
+    "BIOMUTANT": _PE_UE4_STD,
+    # UE5
+    "FN_UE5":         _PE_UE5_STD,
+    "PALWORLD":       _PE_UE5_STD,
+    "BLACK_MYTH":     _PE_UE5_STD,
+    "WUKONG_UE5":     _PE_UE5_STD,
+    "MARVEL_RIVALS":  _PE_UE5_STD,
+    "DEADLOCK":       _PE_UE5_STD,
+    "STALKER2":       _PE_UE5_STD,
+    "TEKKEN8":        _PE_UE5_STD,
+    "LORDS_OF_FALLEN":_PE_UE5_STD,
+    "REMNANT2":       _PE_UE5_STD,
     # Brute-force / unknown
     "CUSTOM": _PE_NONE,
 }
@@ -708,6 +943,7 @@ ENGINE_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "UE2": _OFF_UE2,
     "UE3": _OFF32,
     "UE4": _OFF_UE4,
+    "UE5": _OFF_UE5,
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -744,4 +980,10 @@ ALL_SIGNATURES: list = [
     # ── UE4  Unreal Tournament 4 ─────────────────────────────────────────
     {"label": "UE4/UT4",   "kind": "GObjects", "pattern": _P_UT4_GOBJ, "mask": _P_UT4_GOBJ_MASK, "off": _P_UT4_GOBJ_OFF, "scan_mode": "rip",       "is64": True,  "adjust": 0},
     {"label": "UE4/UT4",   "kind": "GNames",   "pattern": _P_UT4_GNAM, "mask": _P_UT4_GNAM_MASK, "off": _P_UT4_GNAM_OFF, "scan_mode": "rip_deref", "is64": True,  "adjust": 0},
+    # ── UE5  Generic (FNamePool + FChunkedFixedUObjectArray) ─────────────
+    {"label": "UE5/STD",   "kind": "GObjects", "pattern": _P_UE5_GOBJ,    "mask": _P_UE5_GOBJ_MASK,    "off": _P_UE5_GOBJ_OFF,    "scan_mode": "rip", "is64": True, "adjust": 0},
+    {"label": "UE5/STD",   "kind": "GNames",   "pattern": _P_UE5_GNAM,    "mask": _P_UE5_GNAM_MASK,    "off": _P_UE5_GNAM_OFF,    "scan_mode": "rip", "is64": True, "adjust": 0},
+    # ── UE5  Fortnite / FN-style GNames ──────────────────────────────────
+    {"label": "UE5/FN",    "kind": "GObjects", "pattern": _P_UE5_GOBJ,    "mask": _P_UE5_GOBJ_MASK,    "off": _P_UE5_GOBJ_OFF,    "scan_mode": "rip", "is64": True, "adjust": 0},
+    {"label": "UE5/FN",    "kind": "GNames",   "pattern": _P_UE5_FN_GNAM, "mask": _P_UE5_FN_GNAM_MASK, "off": _P_UE5_FN_GNAM_OFF, "scan_mode": "rip", "is64": True, "adjust": 0},
 ]

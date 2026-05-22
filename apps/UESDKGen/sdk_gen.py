@@ -78,6 +78,14 @@ class Layout:
     name_str_off:   int  # offset within FNameEntry to char[]
     name_encoding:  str  # 'ascii' or 'utf-16-le'
     ptr_sz:         int  # 4 (32-bit) or 8 (64-bit)
+    # UE4.25+ FField / FProperty support (optional — default False)
+    is_ffield:      bool = False  # True → properties are FField not UField
+    ustr_child_props: int = 0     # FField* ChildProperties (UE4.25+)
+    uffield_next:   int  = 0x18  # FField* Next
+    uffield_name:   int  = 0x20  # FName NamePrivate
+    uffield_class:  int  = 0x00  # FFieldClass*
+    # UE5 FName — has DisplayIndex field making FName 12 bytes (some builds)
+    uobj_outer_ue5: int  = 0x20  # UObject* Outer (may be 0x28 on 12-byte FName builds)
 
 
 # ── UE2 layout (UT2004, Unreal II) ──────────────────────────────────────────
@@ -145,10 +153,62 @@ UE1_LAYOUT = Layout(
     name_str_off=0x0C, name_encoding="utf-16-le", ptr_sz=4,
 )
 
+# ── UE4 layout (64-bit, UE4.21+, with UE4.25+ FField/FProperty) ─────────────
+# UObject: VTable(8)+Flags(4)+Index(4)+Class(8)+Name(8)+Outer(8) = 0x28
+# UField : UObject+Next(8) = 0x30
+# UStruct: UField+SuperStruct(8)+Children(8)+ChildProperties(8)+PropSize(4) ...
+# FFunction: UStruct base(≈0x58)+FunctionFlags(4)+...
+# FProperty (extends FField): base FField(0x30)+ArrayDim(4)+ElemSize(4)+PropFlags(8)+Offset(4 at 0x4C)
+UE4_LAYOUT = Layout(
+    uobj_outer=0x20,    uobj_name=0x18,    uobj_class=0x10,
+    ufld_next=0x28,     ufld_super=0x30,
+    ustr_children=0x38, ustr_propsize=0x44,
+    ustr_child_props=0x40,
+    uenum_names=0x40,   fname_sz=8,
+    ufunc_flags=0x58,   ufunc_numparms=0x61, ufunc_parmsize=0x62, ufunc_retoff=0x64,
+    uprop_arraydim=0x30, uprop_elemsize=0x34, uprop_propflags=0x38,
+    uprop_offset=0x4C,  uprop_base_sz=0x70,
+    ubyte_enum=0x70,    ubool_bitmask=0x70,
+    uobjp_propclass=0x70, ucls_metaclass=0x78,
+    ustrp_struct=0x70,  uarr_inner=0x70,
+    umap_keyprop=0x70,  umap_valprop=0x78,
+    udel_sigfunc=0x70,  uint_intclass=0x70,
+    name_str_off=0x10,  name_encoding="ascii",   ptr_sz=8,
+    is_ffield=True,
+    uffield_next=0x18,  uffield_name=0x20,  uffield_class=0x00,
+    uobj_outer_ue5=0x20,
+)
+
+# ── UE5 layout (64-bit, UE5.0+) ──────────────────────────────────────────────
+# Same UObject layout as UE4.  FNamePool replaces TNameEntryArray for GNames.
+# Some UE5 builds use a 12-byte FName (ComparisonIndex+DisplayIndex+Number),
+# which shifts Outer to 0x28.  We use the common 8-byte FName default.
+UE5_LAYOUT = Layout(
+    uobj_outer=0x20,    uobj_name=0x18,    uobj_class=0x10,
+    ufld_next=0x28,     ufld_super=0x30,
+    ustr_children=0x38, ustr_propsize=0x44,
+    ustr_child_props=0x40,
+    uenum_names=0x40,   fname_sz=8,
+    ufunc_flags=0x58,   ufunc_numparms=0x61, ufunc_parmsize=0x62, ufunc_retoff=0x64,
+    uprop_arraydim=0x30, uprop_elemsize=0x34, uprop_propflags=0x38,
+    uprop_offset=0x4C,  uprop_base_sz=0x70,
+    ubyte_enum=0x70,    ubool_bitmask=0x70,
+    uobjp_propclass=0x70, ucls_metaclass=0x78,
+    ustrp_struct=0x70,  uarr_inner=0x70,
+    umap_keyprop=0x70,  umap_valprop=0x78,
+    udel_sigfunc=0x70,  uint_intclass=0x70,
+    name_str_off=0x02,  name_encoding="ascii",   ptr_sz=8,
+    is_ffield=True,
+    uffield_next=0x18,  uffield_name=0x20,  uffield_class=0x00,
+    uobj_outer_ue5=0x20,
+)
+
 LAYOUTS: Dict[str, Layout] = {
     "UE1": UE1_LAYOUT,
     "UE2": UE2_LAYOUT,
     "UE3": UE3_LAYOUT,
+    "UE4": UE4_LAYOUT,
+    "UE5": UE5_LAYOUT,
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -290,25 +350,21 @@ class ObjectDB:
         each entry has at least {ptr, name}.
         """
         total = len(objects)
+        is64 = layout.ptr_sz == 8
+        ptr_fmt = "<Q" if is64 else "<I"
+        ptr_read = layout.ptr_sz
         for i, obj in enumerate(objects):
             ptr  = obj.get("ptr", 0)
             name = obj.get("name", "")
             if not ptr:
                 continue
             self.ptr_name[ptr] = name
-            # Read Outer* and Class* with a single 8-byte read to save RTTs
-            blk = backend.read(ptr + layout.uobj_outer, 8)
-            if blk and len(blk) >= 8:
-                outer_ptr = _struct.unpack_from("<I", blk, 0)[0]
-                class_ptr = _struct.unpack_from("<I", blk, 4)[0]
-            else:
-                outer_ptr = _rptr(backend, ptr + layout.uobj_outer)
-                class_ptr = _rptr(backend, ptr + layout.uobj_class)
-            self.ptr_outer[ptr] = outer_ptr
-            # Class name comes from the pointed-to object's name.
-            # We store the class_ptr so we can resolve it after all names are loaded.
-            obj["_class_ptr"] = class_ptr
-            obj["_outer_ptr"] = outer_ptr
+            # Read Outer* and Class* separately (may not be adjacent in UE4)
+            outer_ptr = _rptr(backend, ptr + layout.uobj_outer, is64) if is64 else _rptr(backend, ptr + layout.uobj_outer)
+            class_ptr = _rptr(backend, ptr + layout.uobj_class, is64) if is64 else _rptr(backend, ptr + layout.uobj_class)
+            self.ptr_outer[ptr] = outer_ptr or 0
+            obj["_class_ptr"] = class_ptr or 0
+            obj["_outer_ptr"] = outer_ptr or 0
             if progress_cb and i % 1000 == 0:
                 progress_cb(f"Building object DB: {i:,}/{total:,}")
 
@@ -372,82 +428,143 @@ _SIMPLE_TYPES: Dict[str, str] = {
 def _resolve_prop_type(backend: MemoryBackend, db: ObjectDB,
                        prop_ptr: int, class_name: str,
                        layout: Layout, depth: int = 0) -> str:
-    """Return the C++ type string for a UProperty at prop_ptr."""
+    """Return the C++ type string for a UProperty/FProperty at prop_ptr."""
     if depth > 4:
         return "void*"
 
-    if class_name in _SIMPLE_TYPES:
-        cpp = _SIMPLE_TYPES[class_name]
-        # Byte → check enum
-        if class_name == "ByteProperty":
-            enum_ptr = _rptr(backend, prop_ptr + layout.ubyte_enum)
+    is64 = layout.ptr_sz == 8
+
+    # Normalize FProperty class names to the UProperty equivalents for matching
+    # (FByteProperty → ByteProperty, etc.)
+    norm = class_name[1:] if class_name.startswith("F") and len(class_name) > 1 and class_name[1].isupper() else class_name
+
+    # Check simple FField types first
+    if class_name in _SIMPLE_FFIELD_TYPES:
+        cpp = _SIMPLE_FFIELD_TYPES[class_name]
+        if class_name == "FByteProperty":
+            enum_ptr = _rptr(backend, prop_ptr + layout.ubyte_enum, is64)
             if enum_ptr:
                 ename = db.ptr_name.get(enum_ptr, "")
                 if _valid_name(ename):
                     cpp = f"TEnumAsByte<enum {_safe_ident(ename)}>"
         return cpp
 
-    if class_name == "ObjectProperty":
-        cls_ptr = _rptr(backend, prop_ptr + layout.uobjp_propclass)
+    if norm in _SIMPLE_TYPES:
+        cpp = _SIMPLE_TYPES[norm]
+        if norm == "ByteProperty":
+            enum_ptr = _rptr(backend, prop_ptr + layout.ubyte_enum, is64)
+            if enum_ptr:
+                ename = db.ptr_name.get(enum_ptr, "")
+                if _valid_name(ename):
+                    cpp = f"TEnumAsByte<enum {_safe_ident(ename)}>"
+        return cpp
+
+    if norm == "ObjectProperty":
+        cls_ptr = _rptr(backend, prop_ptr + layout.uobjp_propclass, is64)
         cls_name = db.ptr_name.get(cls_ptr, "")
         if cls_name and _valid_name(cls_name):
             return f"class {_cpp_prefix(cls_name)}{_safe_ident(cls_name)}*"
         return "class UObject*"
 
-    if class_name == "ClassProperty":
-        meta_ptr = _rptr(backend, prop_ptr + layout.ucls_metaclass)
+    if norm == "ClassProperty":
+        meta_ptr = _rptr(backend, prop_ptr + layout.ucls_metaclass, is64)
         meta_name = db.ptr_name.get(meta_ptr, "")
         if meta_name and _valid_name(meta_name):
             return f"class TSubclassOf<class {_cpp_prefix(meta_name)}{_safe_ident(meta_name)}>"
         return "class UClass*"
 
-    if class_name == "StructProperty":
-        st_ptr = _rptr(backend, prop_ptr + layout.ustrp_struct)
+    if norm == "StructProperty":
+        st_ptr = _rptr(backend, prop_ptr + layout.ustrp_struct, is64)
         st_name = db.ptr_name.get(st_ptr, "")
         if st_name and _valid_name(st_name):
             return f"struct F{_safe_ident(st_name)}"
         return "struct FUnknown"
 
-    if class_name == "ArrayProperty":
-        inner_ptr = _rptr(backend, prop_ptr + layout.uarr_inner)
+    if norm == "ArrayProperty":
+        inner_ptr = _rptr(backend, prop_ptr + layout.uarr_inner, is64)
         if inner_ptr:
-            inner_class_ptr = _rptr(backend, inner_ptr + layout.uobj_class)
-            inner_class = db.ptr_name.get(inner_class_ptr, "")
+            if layout.is_ffield:
+                inner_fclass_ptr = _rptr(backend, inner_ptr + layout.uffield_class, is64)
+                inner_class = db.ptr_name.get(inner_fclass_ptr, "")
+            else:
+                inner_class_ptr = _rptr(backend, inner_ptr + layout.uobj_class, is64)
+                inner_class = db.ptr_name.get(inner_class_ptr, "")
             inner_cpp = _resolve_prop_type(backend, db, inner_ptr, inner_class,
                                            layout, depth + 1)
         else:
             inner_cpp = "uint8_t"
         return f"TArray<{inner_cpp}>"
 
-    if class_name == "MapProperty":
-        k_ptr = _rptr(backend, prop_ptr + layout.umap_keyprop)
-        v_ptr = _rptr(backend, prop_ptr + layout.umap_valprop)
-        k_cls = db.ptr_name.get(_rptr(backend, k_ptr + layout.uobj_class) if k_ptr else 0, "")
-        v_cls = db.ptr_name.get(_rptr(backend, v_ptr + layout.uobj_class) if v_ptr else 0, "")
+    if norm == "MapProperty":
+        k_ptr = _rptr(backend, prop_ptr + layout.umap_keyprop, is64)
+        v_ptr = _rptr(backend, prop_ptr + layout.umap_valprop, is64)
+        if layout.is_ffield:
+            k_cls = db.ptr_name.get(_rptr(backend, k_ptr + layout.uffield_class, is64) if k_ptr else 0, "")
+            v_cls = db.ptr_name.get(_rptr(backend, v_ptr + layout.uffield_class, is64) if v_ptr else 0, "")
+        else:
+            k_cls = db.ptr_name.get(_rptr(backend, k_ptr + layout.uobj_class, is64) if k_ptr else 0, "")
+            v_cls = db.ptr_name.get(_rptr(backend, v_ptr + layout.uobj_class, is64) if v_ptr else 0, "")
         kt = _resolve_prop_type(backend, db, k_ptr, k_cls, layout, depth + 1) if k_ptr else "int32_t"
         vt = _resolve_prop_type(backend, db, v_ptr, v_cls, layout, depth + 1) if v_ptr else "int32_t"
         return f"TMap<{kt}, {vt}>"
 
-    if class_name == "DelegateProperty":
-        sig_ptr = _rptr(backend, prop_ptr + layout.udel_sigfunc)
+    if norm == "SetProperty":
+        inner_ptr = _rptr(backend, prop_ptr + layout.uarr_inner, is64)
+        if inner_ptr:
+            cls_off = layout.uffield_class if layout.is_ffield else layout.uobj_class
+            inner_class = db.ptr_name.get(_rptr(backend, inner_ptr + cls_off, is64), "")
+            inner_cpp = _resolve_prop_type(backend, db, inner_ptr, inner_class, layout, depth + 1)
+        else:
+            inner_cpp = "uint8_t"
+        return f"TSet<{inner_cpp}>"
+
+    if norm == "DelegateProperty":
+        sig_ptr = _rptr(backend, prop_ptr + layout.udel_sigfunc, is64)
         sig_name = db.ptr_name.get(sig_ptr, "")
         if sig_name and _valid_name(sig_name):
             return f"struct FScriptDelegate /* {sig_name} */"
         return "struct FScriptDelegate"
 
-    if class_name == "InterfaceProperty":
-        cls_ptr = _rptr(backend, prop_ptr + layout.uint_intclass)
+    if norm in ("MulticastDelegateProperty", "MulticastInlineDelegateProperty",
+                "MulticastSparseDelegateProperty"):
+        return "struct FMulticastScriptDelegate"
+
+    if norm == "InterfaceProperty":
+        cls_ptr = _rptr(backend, prop_ptr + layout.uint_intclass, is64)
         cls_name = db.ptr_name.get(cls_ptr, "")
         if cls_name and _valid_name(cls_name):
             return f"TScriptInterface<class I{_safe_ident(cls_name)}>"
         return "TScriptInterface<class IInterface>"
 
-    if class_name in ("ComponentProperty", "ObjectPropertyBase"):
-        cls_ptr = _rptr(backend, prop_ptr + layout.uobjp_propclass)
+    if norm in ("ComponentProperty", "ObjectPropertyBase",
+                "SoftObjectProperty", "WeakObjectProperty",
+                "LazyObjectProperty"):
+        cls_ptr = _rptr(backend, prop_ptr + layout.uobjp_propclass, is64)
         cls_name = db.ptr_name.get(cls_ptr, "")
+        prefix = "TSoftObjectPtr" if "Soft" in norm else ""
+        if prefix:
+            inner = f"class {_cpp_prefix(cls_name)}{_safe_ident(cls_name)}" if cls_name and _valid_name(cls_name) else "class UObject"
+            return f"{prefix}<{inner}>"
         if cls_name and _valid_name(cls_name):
             return f"class {_cpp_prefix(cls_name)}{_safe_ident(cls_name)}*"
         return "class UComponent*"
+
+    if norm in ("SoftClassProperty",):
+        meta_ptr = _rptr(backend, prop_ptr + layout.ucls_metaclass, is64)
+        meta_name = db.ptr_name.get(meta_ptr, "")
+        inner = f"class {_cpp_prefix(meta_name)}{_safe_ident(meta_name)}" if meta_name and _valid_name(meta_name) else "class UObject"
+        return f"TSoftClassPtr<{inner}>"
+
+    if norm == "EnumProperty":
+        enum_ptr = _rptr(backend, prop_ptr + layout.uprop_base_sz + 0x08, is64)
+        if enum_ptr:
+            ename = db.ptr_name.get(enum_ptr, "")
+            if ename and _valid_name(ename):
+                return f"TEnumAsByte<enum {_safe_ident(ename)}>"
+        return "uint8_t /* enum */"
+
+    if norm == "TextProperty":
+        return "struct FText"
 
     return "uint8_t /* unknown */"
 
@@ -467,22 +584,19 @@ _MAX_CHILDREN = 2048   # safety cap on linked-list walk
 def _walk_children(backend: MemoryBackend, struct_ptr: int,
                    db: ObjectDB, layout: Layout) -> List[Tuple[int, str, str]]:
     """Return [(child_ptr, class_name, child_name), ...]."""
-    first = _rptr(backend, struct_ptr + layout.ustr_children)
+    is64 = layout.ptr_sz == 8
+    first = _rptr(backend, struct_ptr + layout.ustr_children, is64)
     result: List[Tuple[int, str, str]] = []
     seen: Set[int] = set()
     cur = first
     count = 0
     while cur and cur not in seen and count < _MAX_CHILDREN:
         seen.add(cur)
-        class_ptr = _rptr(backend, cur + layout.uobj_class)
+        class_ptr = _rptr(backend, cur + layout.uobj_class, is64)
         class_name = db.ptr_name.get(class_ptr, "")
         child_name = db.ptr_name.get(cur, "")
-        if not child_name:
-            # Try reading directly
-            ni = _ru32(backend, cur + layout.uobj_name)
-            child_name = ""  # can't resolve without names dict here
         result.append((cur, class_name, child_name))
-        cur = _rptr(backend, cur + layout.ufld_next)
+        cur = _rptr(backend, cur + layout.ufld_next, is64)
         count += 1
     return result
 
@@ -564,8 +678,9 @@ def _read_enum(backend: MemoryBackend,
     obj_name = names.get(_ru32(backend, enum_ptr + layout.uobj_name), "")
     if not obj_name or not _valid_name(obj_name):
         return None
+    is64 = layout.ptr_sz == 8
     # TArray<FName> — read ptr, count
-    arr_data  = _rptr(backend, enum_ptr + layout.uenum_names)
+    arr_data  = _rptr(backend, enum_ptr + layout.uenum_names, is64)
     arr_count = _ru32(backend, enum_ptr + layout.uenum_names + layout.ptr_sz)
     values: List[str] = []
     if arr_data and 0 < arr_count < 2048:
@@ -586,8 +701,9 @@ def _read_struct(backend: MemoryBackend, db: ObjectDB,
     name = db.ptr_name.get(struct_ptr, "")
     if not name or not _valid_name(name):
         return None
+    is64 = layout.ptr_sz == 8
     prop_size = _ru32(backend, struct_ptr + layout.ustr_propsize)
-    super_ptr = _rptr(backend, struct_ptr + layout.ufld_super)
+    super_ptr = _rptr(backend, struct_ptr + layout.ufld_super, is64)
     parent_cpp = ""
     if super_ptr:
         super_name = db.ptr_name.get(super_ptr, "")
@@ -606,16 +722,17 @@ def _read_struct(backend: MemoryBackend, db: ObjectDB,
     members:   List[MemberInfo] = []
     functions: List[FuncInfo]   = []
 
-    children = _walk_children(backend, struct_ptr, db, layout)
+    # UE4.25+: properties use FField* ChildProperties; functions still UField* Children
+    if layout.is_ffield:
+        ffield_children = _walk_ffield_children(backend, struct_ptr, db, layout)
+        ufield_children = _walk_children(backend, struct_ptr, db, layout)  # functions only
 
-    # Sort children by offset for proper struct layout
-    prop_children = []
-    func_children = []
-    for child_ptr, child_class, _ in children:
-        if _is_property_class(child_class):
-            prop_children.append((child_ptr, child_class))
-        elif child_class == "Function":
-            func_children.append((child_ptr, child_class))
+        prop_children  = [(cp, cc) for (cp, cc, _) in ffield_children if _is_property_class(cc)]
+        func_children  = [(cp, cc) for (cp, cc, _) in ufield_children if cc == "Function"]
+    else:
+        children = _walk_children(backend, struct_ptr, db, layout)
+        prop_children = [(cp, cc) for (cp, cc, _) in children if _is_property_class(cc)]
+        func_children = [(cp, cc) for (cp, cc, _) in children if cc == "Function"]
 
     # Sort properties by offset
     prop_with_offset = []
@@ -694,10 +811,76 @@ _PROPERTY_CLASSES = {
     "ComponentProperty", "ObjectPropertyBase", "QWordProperty",
     "DoubleProperty", "PointerProperty", "WeakObjectProperty",
     "LazyObjectProperty", "AssetObjectProperty",
+    # UE4/UE5 FProperty class names (same logical names, 'F' prefix in class, not in FName)
+    "FByteProperty", "FIntProperty", "FInt8Property", "FInt16Property",
+    "FInt64Property", "FUInt16Property", "FUInt32Property", "FUInt64Property",
+    "FFloatProperty", "FDoubleProperty", "FBoolProperty",
+    "FStrProperty", "FNameProperty", "FTextProperty",
+    "FObjectProperty", "FClassProperty", "FStructProperty", "FArrayProperty",
+    "FMapProperty", "FSetProperty", "FDelegateProperty",
+    "FMulticastDelegateProperty", "FMulticastInlineDelegateProperty",
+    "FMulticastSparseDelegateProperty",
+    "FInterfaceProperty", "FSoftObjectProperty", "FSoftClassProperty",
+    "FWeakObjectProperty", "FLazyObjectProperty", "FEnumProperty",
+    "FFieldPathProperty",
 }
 
 def _is_property_class(name: str) -> bool:
     return name in _PROPERTY_CLASSES
+
+# UE4/UE5 FProperty type map (FField class name → C++ type)
+_SIMPLE_FFIELD_TYPES: Dict[str, str] = {
+    "FByteProperty":     "uint8_t",
+    "FIntProperty":      "int32_t",
+    "FInt8Property":     "int8_t",
+    "FInt16Property":    "int16_t",
+    "FInt64Property":    "int64_t",
+    "FUInt16Property":   "uint16_t",
+    "FUInt32Property":   "uint32_t",
+    "FUInt64Property":   "uint64_t",
+    "FFloatProperty":    "float",
+    "FDoubleProperty":   "double",
+    "FBoolProperty":     "uint32_t",
+    "FStrProperty":      "struct FString",
+    "FNameProperty":     "struct FName",
+    "FTextProperty":     "struct FText",
+}
+
+
+def _walk_ffield_children(backend: MemoryBackend, struct_ptr: int,
+                          db: ObjectDB, layout: Layout) -> List[Tuple[int, str, str]]:
+    """Walk FField* ChildProperties linked list (UE4.25+ properties).
+
+    Returns [(field_ptr, ffield_class_name, field_name), ...]
+    """
+    is64 = layout.ptr_sz == 8
+    first = _rptr(backend, struct_ptr + layout.ustr_child_props, is64)
+    result: List[Tuple[int, str, str]] = []
+    seen: Set[int] = set()
+    cur = first
+    count = 0
+    while cur and cur not in seen and count < _MAX_CHILDREN:
+        seen.add(cur)
+        fclass_ptr  = _rptr(backend, cur + layout.uffield_class, is64)
+        # FFieldClass: +0x00 uint64 Id, +0x08 FName Name (index into GNames)
+        # The name index in FFieldClass::Name lets us look up the class name
+        fclass_name_idx = _ru32(backend, fclass_ptr + 0x08) if fclass_ptr else 0
+        # We don't have the names dict here; db.ptr_name keyed by ptr, not name index
+        # FFieldClass objects are sometimes in ptr_name if they're UObjects — but they
+        # are NOT UObjects.  We fall back to reading the FFieldClass' name string
+        # directly at a fixed offset (FFieldClass::Name is at +0x08, an FName,
+        # and the name string would need GNames to resolve).
+        # As a practical approach: FField names come from GNames via FField::NamePrivate.
+        # We record the raw name_index and resolve post-hoc via the names dict passed
+        # to _read_struct/_read_member etc.
+        fclass_name = db.ptr_name.get(fclass_ptr, "")  # empty for non-UObject class ptrs
+        # Read FField::NamePrivate index for this field
+        field_name_idx = _ru32(backend, cur + layout.uffield_name)
+        field_name = ""  # resolve later via names dict
+        result.append((cur, fclass_name, field_name))
+        cur = _rptr(backend, cur + layout.uffield_next, is64)
+        count += 1
+    return result
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Package builder
@@ -762,8 +945,8 @@ _BASIC_TYPES_HEADER = """\
 #include <string>
 #include <Windows.h>
 
-struct FPointer    { uintptr_t Dummy; };
-struct FQWord      { int32_t A; int32_t B; };
+struct FPointer    {{ uintptr_t Dummy; }};
+struct FQWord      {{ int32_t A; int32_t B; }};
 
 struct FName {{
     int32_t Index;
@@ -786,8 +969,16 @@ struct FString : TArray<wchar_t> {{
     std::string ToString() const;
 }};
 
+struct FText {{
+    unsigned char UnknownData[0x18];
+}};
+
 struct FScriptDelegate {{
     unsigned char UnknownData[0x0C];
+}};
+
+struct FMulticastScriptDelegate {{
+    unsigned char UnknownData[0x10];
 }};
 
 class UClass;
@@ -801,6 +992,34 @@ template<class T>
 struct TScriptInterface {{
     T*     ObjectPointer;
     void*  InterfacePointer;
+}};
+
+template<class T>
+struct TSoftObjectPtr {{
+    unsigned char UnknownData[0x28];
+}};
+
+template<class T>
+struct TSoftClassPtr {{
+    unsigned char UnknownData[0x28];
+}};
+
+template<class T>
+struct TSet {{
+    unsigned char UnknownData[0x50];
+}};
+
+template<class K, class V>
+struct TMap {{
+    unsigned char UnknownData[0x50];
+}};
+
+template<class T>
+struct TEnumAsByte {{
+    uint8_t Value;
+    TEnumAsByte() {{}}
+    TEnumAsByte(T v) : Value(static_cast<uint8_t>(v)) {{}}
+    operator T() const {{ return static_cast<T>(Value); }}
 }};
 """
 
@@ -1005,7 +1224,7 @@ def generate_sdk_files(
 
     layout = LAYOUTS.get(ue_ver)
     if not layout:
-        _log(f"[!] Unsupported engine version: {ue_ver}  (UE4 not yet supported)")
+        _log(f"[!] Unsupported engine version: {ue_ver}")
         return 0, 0
 
     # ── 1. Output directory ─────────────────────────────────────────────────

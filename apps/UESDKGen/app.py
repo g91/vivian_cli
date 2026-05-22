@@ -25,7 +25,7 @@ from typing import Dict, List, Optional, Tuple
 try:
     from .theme      import C, apply_theme
     from .backends   import MemoryBackend, NativeBackend, VmmBackend, SocketDMABackend, list_procs
-    from .reader     import UE3Reader, UE4Reader, PatternScanner, find_process_event
+    from .reader     import UE3Reader, UE4Reader, UE5Reader, PatternScanner, find_process_event
     from .profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE, ALL_SIGNATURES, ENGINE_DEFAULTS
     from .codegen    import generate_sdk
     from .sdk_gen    import generate_sdk_files, LAYOUTS as SDK_LAYOUTS
@@ -34,7 +34,7 @@ except ImportError:
     from theme      import C, apply_theme          # type: ignore[no-redef]
     from backends   import (MemoryBackend, NativeBackend, VmmBackend,  # type: ignore[no-redef]
                             SocketDMABackend, list_procs)
-    from reader     import UE3Reader, UE4Reader, PatternScanner, find_process_event  # type: ignore[no-redef]
+    from reader     import UE3Reader, UE4Reader, UE5Reader, PatternScanner, find_process_event  # type: ignore[no-redef]
     from profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE, ALL_SIGNATURES, ENGINE_DEFAULTS  # type: ignore[no-redef]
     from codegen    import generate_sdk            # type: ignore[no-redef]
     from sdk_gen    import generate_sdk_files, LAYOUTS as SDK_LAYOUTS  # type: ignore[no-redef]
@@ -1046,9 +1046,31 @@ class UESDKGenApp(tk.Tk):
             s = s.strip()
             return int(s, 16) if s.lower().startswith("0x") else int(s)
 
-        prof = GAME_PROFILES.get(self._var_profile.get(), {})
-        enc  = prof.get("name_encoding", "ascii")
+        prof    = GAME_PROFILES.get(self._var_profile.get(), {})
+        enc     = prof.get("name_encoding", "ascii")
+        ue_ver  = prof.get("ue_version", "UE3")
+        gobj_layout = prof.get("gobj_layout", "tarray")
 
+        if ue_ver == "UE5":
+            return UE5Reader(
+                backend        = self._backend,
+                gobjects_va    = _h(self._var_gobjects.get()),
+                gnames_va      = _h(self._var_gnames.get()),
+                name_field_off = _h(self._var_nameoff.get()),
+                name_str_off   = _h(self._var_namestroff.get()),
+                name_encoding  = enc,
+                gobj_layout    = gobj_layout,
+            )
+        if ue_ver == "UE4":
+            return UE4Reader(
+                backend        = self._backend,
+                gobjects_va    = _h(self._var_gobjects.get()),
+                gnames_va      = _h(self._var_gnames.get()),
+                name_field_off = _h(self._var_nameoff.get()),
+                name_str_off   = _h(self._var_namestroff.get()),
+                name_encoding  = enc,
+                gobj_layout    = gobj_layout,
+            )
         return UE3Reader(
             backend        = self._backend,
             gobjects_va    = _h(self._var_gobjects.get()),
@@ -1362,7 +1384,7 @@ class UESDKGenApp(tk.Tk):
             gobj_match_va: Optional[int] = None   # raw match before deref
             gnam_match_va: Optional[int] = None
 
-            if ue_ver == "UE4":
+            if ue_ver in ("UE4", "UE5"):
                 if gobj_pat:
                     self.after(0, lambda: self._set_status("Sig scan: scanning for GObjects (RIP)…"))
                     gobj_va = scanner.scan_rip(base, size, gobj_pat, gobj_mask, gobj_off,
@@ -1401,7 +1423,7 @@ class UESDKGenApp(tk.Tk):
                            if m is not None else "  → no match")))
 
             # ── post-scan diagnostics when GObjects still missing ─────────
-            if gobj_pat and gobj_va is None and ue_ver != "UE4":
+            if gobj_pat and gobj_va is None and ue_ver not in ("UE4", "UE5"):
                 # 1. If GNames matched, do a near-miss scan in a 256 KB window
                 #    around the GNames match address (both patterns live in the
                 #    same DLL so they should be close together).
@@ -1814,12 +1836,8 @@ class UESDKGenApp(tk.Tk):
         prof   = GAME_PROFILES.get(key, {})
         ue_ver = prof.get("ue_version", "UE3")
 
-        if ue_ver == "UE4":
-            messagebox.showinfo(
-                "UE4 not supported yet",
-                "Full SDK file generation for UE4 is not yet implemented.\n"
-                "Use 'Generate Inline SDK' for a quick header skeleton.")
-            return
+        if ue_ver == "UE5":
+            ue_ver = "UE5"   # ensure UE5Reader path used downstream
 
         # Auto-fill game name from profile if still at default
         if game_name == "UnknownGame" and key != "CUSTOM":

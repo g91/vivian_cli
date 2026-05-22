@@ -1,6 +1,8 @@
-"""reader.py — UE3 memory reader + pattern scanner for UESDKGen.
+"""reader.py — UE3/UE4/UE5 memory reader + pattern scanner for UESDKGen.
 
 UE3Reader    — dumps GNames / GObjects, detects name offset, scans for TArrays.
+UE4Reader    — UE4 chunked GObjects + TNameEntryArray GNames.
+UE5Reader    — UE5 chunked GObjects + FNamePool GNames.
 PatternScanner — scans a memory range for a byte pattern+mask, returns the
                  dereferenced VA written at (match + offset).
 """
@@ -523,4 +525,114 @@ class UE4Reader:
             if cb and i % 500 == 0:
                 cb(i, num_elems)
         return out
+
+    def dump_names_namepool(self, cb=None, item_cb=None) -> Dict[int, str]:
+        """Read GNames via UE5 FNamePool.
+
+        FNamePool layout:
+          +0x00  (lock / sync data)
+          +0x04  int32 ByteCursor  (current position in current chunk — used to find last chunk)
+          +0x08  int32 Unused
+          +0x10  FNamePoolShardBase* Chunks[...] (chunk pointers)
+
+        Each chunk is a 0x40000-byte block.  FNameEntry header is a uint16:
+          bits [15..LengthShift] = string length
+          bit  [0]               = IsWide
+        Immediately followed by the (wide)char string, no null terminator.
+        """
+        CHUNK_SIZE   = 0x40000   # 256 KB per chunk
+        HEADER_SZ    = 2         # uint16 header
+        chunks_start = self.gnames_va + 0x10
+
+        # Count how many non-null chunk pointers there are
+        chunk_ptrs: List[int] = []
+        for i in range(0x400):   # generous upper bound
+            cp = self.backend.rptr(chunks_start + i * 8, is64=True)
+            if not cp:
+                break
+            chunk_ptrs.append(cp)
+
+        if not chunk_ptrs:
+            return {}
+
+        # Detect the length shift count by finding "ByteProperty" (len=0xC=12)
+        # in the first chunk.  Try shift values 4..6.
+        length_shift = 4   # default (most common in UE5)
+        target_len   = len("ByteProperty")   # 12
+        KNOWN_NAME   = b"ByteProperty"
+        for shift in (4, 5, 6):
+            # scan first 0x4000 bytes of chunk 0
+            chunk_data = self.backend.read(chunk_ptrs[0], 0x4000)
+            if not chunk_data:
+                break
+            for off in range(0, len(chunk_data) - HEADER_SZ - target_len):
+                hdr = int.from_bytes(chunk_data[off:off+2], "little")
+                ln  = hdr >> shift
+                if ln == target_len and chunk_data[off+2:off+2+target_len] == KNOWN_NAME:
+                    length_shift = shift
+                    break
+            else:
+                continue
+            break
+
+        out: Dict[int, str] = {}
+        global_idx = 0
+        for chunk_ptr in chunk_ptrs:
+            offset = 0
+            while offset < CHUNK_SIZE - HEADER_SZ:
+                entry_va = chunk_ptr + offset
+                raw_hdr  = self.backend.read(entry_va, HEADER_SZ)
+                if not raw_hdr or len(raw_hdr) < HEADER_SZ:
+                    break
+                hdr     = int.from_bytes(raw_hdr, "little")
+                is_wide = bool(hdr & 0x1)
+                length  = hdr >> length_shift
+                if length == 0:
+                    # End of used portion of chunk
+                    break
+                char_sz = 2 if is_wide else 1
+                str_data = self.backend.read(entry_va + HEADER_SZ, length * char_sz)
+                if not str_data:
+                    break
+                try:
+                    enc  = "utf-16-le" if is_wide else "ascii"
+                    name = str_data.decode(enc, errors="replace")
+                except Exception:
+                    name = ""
+                if name:
+                    out[global_idx] = name
+                    if item_cb:
+                        item_cb(global_idx, name)
+                # Advance by aligned entry size (2-byte aligned)
+                entry_total = HEADER_SZ + length * char_sz
+                entry_total = (entry_total + 1) & ~1   # align to 2 bytes
+                offset     += entry_total
+                global_idx += 1
+
+            if cb:
+                cb(global_idx, len(chunk_ptrs) * 1000)
+
+        return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UE5 memory reader  (x64, FNamePool GNames, FChunkedFixedUObjectArray GObjects)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class UE5Reader(UE4Reader):
+    """UE5 reader.  Identical to UE4Reader except GNames uses FNamePool by default.
+
+    Usage:
+        reader = UE5Reader(backend, gobjects_va=..., gnames_va=...,
+                           name_field_off=0x18, gobj_layout="fuobj_chunked")
+        names   = reader.dump_names()   # auto-uses FNamePool
+        objects = reader.dump_objects(names)
+    """
+
+    def dump_names(self, cb=None, item_cb=None) -> Dict[int, str]:  # type: ignore[override]
+        """Prefer FNamePool (UE5).  Falls back to TNameEntryArray if pool returns empty."""
+        result = self.dump_names_namepool(cb=cb, item_cb=item_cb)
+        if not result:
+            result = super().dump_names(cb=cb, item_cb=item_cb)
+        return result
 
