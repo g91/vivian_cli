@@ -23,6 +23,9 @@ x-common: &common
     dockerfile: Dockerfile
     args:
       PYTHON_VERSION: "3.12"
+      # Optional extras to bake into the image.
+      # Override with: VIVIAN_EXTRAS=dev,parsecvision docker compose up --build
+      EXTRAS: ${VIVIAN_EXTRAS:-dev}
   image: vivian-cli:latest
   volumes:
     # Persist Vivian config and session data across container restarts

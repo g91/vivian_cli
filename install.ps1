@@ -115,30 +115,81 @@ Write-Host ""
 Write-Color "[1/6] Checking Python..." "White"
 
 $pythonCmd = $null
-foreach ($cmd in @("python", "python3", "py")) {
+$pyVer     = $null
+
+# Check py launcher with explicit version first, then generic commands
+$pythonCandidates = @(
+    @{ Cmd = "py";         Args = "-3.12" },
+    @{ Cmd = "py";         Args = "-3.11" },
+    @{ Cmd = "py";         Args = "-3.10" },
+    @{ Cmd = "python3.12"; Args = $null   },
+    @{ Cmd = "python3.11"; Args = $null   },
+    @{ Cmd = "python3.10"; Args = $null   },
+    @{ Cmd = "python3";    Args = $null   },
+    @{ Cmd = "python";     Args = $null   }
+)
+
+foreach ($entry in $pythonCandidates) {
+    $cmd = $entry.Cmd; $arg = $entry.Args
     try {
-        $ver = & $cmd --version 2>&1
+        $verArgs = if ($arg) { @($arg, "--version") } else { @("--version") }
+        $ver = & $cmd @verArgs 2>&1
         if ($ver -match "Python (\d+)\.(\d+)") {
-            $major = [int]$Matches[1]
-            $minor = [int]$Matches[2]
+            $major = [int]$Matches[1]; $minor = [int]$Matches[2]
             if ($major -ge 3 -and $minor -ge 10) {
-                $pythonCmd = $cmd
+                $pythonCmd = if ($arg) { "$cmd $arg" } else { $cmd }
+                $pyVer     = $ver.ToString()
                 break
             }
         }
     } catch {}
 }
 
+# ── Auto-install Python 3.12 via winget if not found ──────────────────────────
 if (-not $pythonCmd) {
-    Write-Color "ERROR: Python 3.10+ is required but not found." "Red"
-    Write-Host ""
-    Write-Color "Install Python from: https://www.python.org/downloads/" "Yellow"
-    Write-Color "Or: winget install Python.Python.3.12" "Yellow"
-    Write-Color "Make sure to check 'Add Python to PATH' during installation." "Yellow"
-    exit 1
+    Write-Color "  Python 3.10+ not found. Attempting auto-install via winget..." "Yellow"
+    $wingetOk = $false
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        try {
+            Write-Color "  Running: winget install Python.Python.3.12" "Gray"
+            winget install --id Python.Python.3.12 --source winget `
+                --silent --accept-package-agreements --accept-source-agreements
+            $wingetOk = $true
+            Write-Color "  Python 3.12 installed via winget." "Green"
+            # Refresh PATH for this session
+            $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
+                        [System.Environment]::GetEnvironmentVariable("PATH", "User")
+            # Re-detect after install
+            foreach ($testCmd in @("py -3.12", "python3.12", "python")) {
+                try {
+                    $parts = $testCmd.Split(" ")
+                    $v = & $parts[0] @($parts[1..99] | Where-Object { $_ }) "--version" 2>&1
+                    if ($v -match "Python 3\.(1[0-9]|[2-9]\d)") {
+                        $pythonCmd = $testCmd; $pyVer = $v.ToString(); break
+                    }
+                } catch {}
+            }
+        } catch {
+            Write-Color "  winget install failed: $_" "Red"
+        }
+    } else {
+        Write-Color "  winget not available on this system." "Yellow"
+    }
+
+    if (-not $pythonCmd) {
+        Write-Color "ERROR: Python 3.10+ is required and could not be installed automatically." "Red"
+        Write-Host ""
+        Write-Color "Please install manually, then re-run this script:" "Yellow"
+        Write-Color "  winget install Python.Python.3.12" "Cyan"
+        Write-Color "  https://www.python.org/downloads/release/python-3129/" "Cyan"
+        Write-Color "  Microsoft Store: search for 'Python 3.12'" "Cyan"
+        Write-Host ""
+        Write-Color "Tip: check 'Add Python to PATH' in the installer." "Yellow"
+        exit 1
+    }
 }
 
-Write-Color "  OK Found $pythonCmd $ver" "Green"
+Write-Color "  OK Found: $pythonCmd  ($pyVer)" "Green"
 
 Write-Color "[2/6] Creating directories..." "White"
 
@@ -173,12 +224,27 @@ $venvPip = "$VenDir\Scripts\pip.exe"
 Write-Color "  Upgrading pip..." "Gray"
 & $venvPython -m pip install --upgrade pip -q
 
+# ── Optional extras prompt ─────────────────────────────────────────────────
+Write-Host ""
+Write-Color "  Optional feature packs  (add later: pip install -e `".[extra]`")" "White"
+Write-Host ""
+
+$extras = @("dev")  # dev tools on by default
+$ansDev = Read-Host "  Install dev tools? (pytest, black, ruff) [Y/n]"
+if ($ansDev -match "^[Nn]") { $extras = @() }
+
+$ansPv = Read-Host "  Install screen-capture/vision tools? (opencv, Pillow, mss) [y/N]"
+if ($ansPv -match "^[Yy]") { $extras += "parsecvision" }
+
+$ansDma = Read-Host "  Install DMA/PCILeech support? (memprocfs, Windows) [y/N]"
+if ($ansDma -match "^[Yy]") { $extras += "dma" }
+
+$extrasStr  = if ($extras.Count -gt 0) { "[" + ($extras -join ",") + "]" } else { "" }
+$installTgt = if ($Dev) { "-e `"$ActualSource$extrasStr`"" } else { "`"$ActualSource$extrasStr`"" }
+
+Write-Host ""
 Write-Color "  Installing dependencies..." "Gray"
-if ($Dev) {
-    & $venvPip install -e $ActualSource -q
-} else {
-    & $venvPip install "prompt_toolkit>=3.0.0" -q
-}
+Invoke-Expression "& `$venvPip install $installTgt -q"
 
 Write-Color "  OK Python environment ready" "Green"
 

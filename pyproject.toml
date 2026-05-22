@@ -53,8 +53,21 @@ parsecvision = [
     "numpy>=1.24.0",
 ]
 dma = [
-    "memprocfs>=0.0.1",
+    "memprocfs>=0.0.1 ; sys_platform == 'win32'",
     "numpy>=1.24.0",
+]
+# all — install every optional feature at once
+all = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "black>=23.0",
+    "ruff>=0.1.0",
+    "opencv-python>=4.8.0",
+    "mss>=9.0.0",
+    "Pillow>=10.0.0",
+    "keyboard>=0.13.5",
+    "numpy>=1.24.0",
+    "memprocfs>=0.0.1 ; sys_platform == 'win32'",
 ]
 
 [project.scripts]
@@ -62,8 +75,8 @@ vivian = "vivian_cli.cli_main:run"
 ai = "vivian_cli.cli_main:run"
 
 [project.urls]
-Homepage = "https://github.com/vivian-ai/vivian-cli"
-Repository = "https://github.com/vivian-ai/vivian-cli"
+Homepage = "https://github.com/g91/vivian_cli"
+Repository = "https://github.com/g91/vivian_cli"
 
 [tool.setuptools.packages.find]
 where = ["."]

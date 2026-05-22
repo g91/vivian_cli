@@ -24,8 +24,12 @@ from __future__ import annotations
 
 import sys
 import os
+import json
+import struct
 import threading
 import time
+import urllib.request
+import urllib.error
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -52,6 +56,60 @@ except ImportError as _e:
     HAS_DMA  = False
     _DMA_ERR = str(_e)
 
+    # ── Fallback type stubs so the GUI works in remote-only mode ───────────────
+    import struct as _struct
+
+    class DataType:  # type: ignore
+        INT8   = "int8";  INT16  = "int16";  INT32  = "int32";  INT64  = "int64"
+        UINT8  = "uint8"; UINT16 = "uint16"; UINT32 = "uint32"; UINT64 = "uint64"
+        FLOAT  = "float"; DOUBLE = "double"
+        STRING_UTF8  = "string_utf8";  STRING_UTF16 = "string_utf16"
+        BYTES  = "bytes"
+        def __init__(self, s: str) -> None:
+            self.value = s
+        def __eq__(self, other: object) -> bool:
+            o = other.value if isinstance(other, DataType) else other
+            return self.value == o
+        def __hash__(self) -> int:
+            return hash(self.value)
+
+    class ScanType:  # type: ignore
+        EXACT     = "Exact";     RANGE    = "Range"
+        UNKNOWN   = "Unknown / First Scan"
+        INCREASED = "Increased"; DECREASED = "Decreased"
+        CHANGED   = "Changed";   UNCHANGED = "Unchanged"
+
+    _STRUCT_FMTS = {
+        "int8":   ("<b", 1), "int16":  ("<h", 2),
+        "int32":  ("<i", 4), "int64":  ("<q", 8),
+        "uint8":  ("<B", 1), "uint16": ("<H", 2),
+        "uint32": ("<I", 4), "uint64": ("<Q", 8),
+        "float":  ("<f", 4), "double": ("<d", 8),
+    }
+
+    def encode(val: Any, dt: Any) -> bytes:  # type: ignore
+        s = dt.value if hasattr(dt, "value") else str(dt)
+        if s in _STRUCT_FMTS:
+            return _struct.pack(_STRUCT_FMTS[s][0], val)
+        if s == "string_utf8":  return str(val).encode("utf-8")
+        if s == "string_utf16": return str(val).encode("utf-16-le")
+        if s == "bytes":        return val
+        raise ValueError(s)
+
+    def decode(raw: bytes, dt: Any) -> Any:  # type: ignore
+        s = dt.value if hasattr(dt, "value") else str(dt)
+        if s in _STRUCT_FMTS:
+            fmt, sz = _STRUCT_FMTS[s]
+            return _struct.unpack(fmt, raw[:sz])[0] if len(raw) >= sz else None
+        if s == "string_utf8":  return raw.decode("utf-8",    errors="replace").rstrip("\x00")
+        if s == "string_utf16": return raw.decode("utf-16-le", errors="replace").rstrip("\x00")
+        if s == "bytes":        return raw
+        return None
+
+    def type_size(dt: Any) -> int:  # type: ignore
+        s = dt.value if hasattr(dt, "value") else str(dt)
+        return _STRUCT_FMTS.get(s, ("<i", 4))[1]
+
 # ── colour palette (Catppuccin Mocha dark) ─────────────────────────────────────
 C = dict(
     base    = "#1e1e2e",
@@ -77,8 +135,746 @@ _DATA_TYPES  = ["int8","int16","int32","int64",
                 "float","double","string_utf8","string_utf16","bytes"]
 _SCAN_MODES  = ["Exact","Range","Unknown / First Scan",
                 "Increased","Decreased","Changed","Unchanged"]
-_DEVICES     = ["fpga","usb3380","native","file"]
+_DEVICES     = ["fpga","usb3380","native","file","local","remote"]
 _LIVE_DELAY  = 0.5   # seconds between live address-list refreshes
+
+
+# ── Remote proxy classes ──────────────────────────────────────────────────────
+
+class _RemoteHTTP:
+    """Minimal stdlib HTTP client for talking to the MemEdit API server."""
+
+    def __init__(self, host: str, port: int, token: str = "") -> None:
+        self._base  = f"http://{host}:{port}"
+        self._hdrs  = {"Content-Type": "application/json",
+                       "Accept":       "application/json"}
+        if token:
+            self._hdrs["Authorization"] = f"Bearer {token}"
+
+    def _raise(self, e: urllib.error.HTTPError) -> None:
+        try:
+            detail = json.loads(e.read().decode()).get("detail", "")
+        except Exception:
+            detail = str(e)
+        raise RuntimeError(f"HTTP {e.code}: {detail}")
+
+    def get(self, path: str) -> dict:
+        req = urllib.request.Request(self._base + path, headers=self._hdrs)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            self._raise(e)
+
+    def post(self, path: str, body: Optional[dict] = None) -> dict:
+        data = json.dumps(body or {}).encode()
+        req  = urllib.request.Request(self._base + path, data=data,
+                                      headers=self._hdrs)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            self._raise(e)
+
+
+class _RMatch:
+    __slots__ = ("address",)
+    def __init__(self, address: int) -> None:
+        self.address = address
+
+
+class RemoteScanResults:
+    """Scan results returned by the remote server."""
+
+    def __init__(self, data: dict) -> None:
+        self._token   = data.get("token", "")
+        self._count   = data.get("count", 0)
+        self._matches = [_RMatch(int(m["address"], 16))
+                         for m in data.get("matches", [])]
+
+    def __len__(self) -> int:
+        return self._count
+
+
+def _dtype_str(dt: Any) -> str:
+    if isinstance(dt, str): return dt
+    return getattr(dt, "value", str(dt))
+
+
+def _stype_str(st: Any) -> str:
+    """Convert any ScanType-like value to the string the server expects."""
+    if isinstance(st, str):
+        return st
+    v = getattr(st, "value", None)
+    if isinstance(v, str):
+        return v
+    n = getattr(st, "name", None)
+    if n:
+        return {"EXACT": "Exact", "RANGE": "Range",
+                "UNKNOWN": "Unknown / First Scan",
+                "INCREASED": "Increased", "DECREASED": "Decreased",
+                "CHANGED": "Changed", "UNCHANGED": "Unchanged"
+                }.get(n.upper(), n)
+    return str(st)
+
+
+class RemoteScannerProxy:
+    def __init__(self, http: _RemoteHTTP) -> None:
+        self._http = http
+
+    def scan(self, val: Any, dt: Any, st: Any,
+             value2: Any = None) -> RemoteScanResults:
+        payload: dict = {
+            "value":     str(val),
+            "dtype":     _dtype_str(dt),
+            "scan_type": _stype_str(st),
+        }
+        if value2 is not None:
+            payload["value2"] = str(value2)
+        return RemoteScanResults(self._http.post("/api/scan/first", payload))
+
+    def next_scan(self, prev: RemoteScanResults,
+                  val: Any, st: Any) -> RemoteScanResults:
+        payload: dict = {
+            "token":     prev._token,
+            "scan_type": _stype_str(st),
+        }
+        if val is not None:
+            payload["value"] = str(val)
+        return RemoteScanResults(self._http.post("/api/scan/next", payload))
+
+    def search_string(self, text: str, dt: Any) -> RemoteScanResults:
+        enc = "utf8" if "utf8" in _dtype_str(dt) else "utf16"
+        return RemoteScanResults(
+            self._http.post("/api/scan/string",
+                            {"text": text, "encoding": enc}))
+
+    def search_aob(self, pattern: str) -> RemoteScanResults:
+        return RemoteScanResults(
+            self._http.post("/api/scan/aob", {"pattern": pattern}))
+
+
+class _RModule:
+    __slots__ = ("base", "size", "name", "path")
+    def __init__(self, d: dict) -> None:
+        self.base = int(d["base"], 16)
+        self.size = d["size"]
+        self.name = d["name"]
+        self.path = d["path"]
+
+
+class RemoteProcessProxy:
+    def __init__(self, http: _RemoteHTTP, name: str, pid: int) -> None:
+        self._http = http
+        self.name  = name
+        self.pid   = pid
+
+    def read(self, address: int, size: int) -> Optional[bytes]:
+        try:
+            d = self._http.post("/api/memory/read",
+                                {"address": f"0x{address:016X}", "size": size})
+            h = d.get("data", "")
+            return bytes.fromhex(h) if h else None
+        except Exception:
+            return None
+
+    def write(self, address: int, data: bytes) -> bool:
+        try:
+            r = self._http.post("/api/memory/write",
+                                {"address": f"0x{address:016X}",
+                                 "data":    data.hex()})
+            return bool(r.get("ok", False))
+        except Exception:
+            return False
+
+    def modules(self) -> List[_RModule]:
+        try:
+            return [_RModule(m)
+                    for m in self._http.get("/api/modules").get("modules", [])]
+        except Exception:
+            return []
+
+    def memory_regions(self) -> List[dict]:
+        try:
+            out = []
+            for r in self._http.get("/api/regions").get("regions", []):
+                out.append({
+                    "va_start":   int(r["va_start"],   16),
+                    "va_end":     int(r["va_end"],     16),
+                    "size":       r["size"],
+                    "protection": r.get("protection", ""),
+                    "type":       r.get("type", ""),
+                    "tag":        r.get("tag",  ""),
+                })
+            return out
+        except Exception:
+            return []
+
+    def scanner(self) -> RemoteScannerProxy:
+        return RemoteScannerProxy(self._http)
+
+    def resolve_pointer_chain(self, base: int,
+                               offsets: List[int]) -> Optional[int]:
+        try:
+            r = self._http.post("/api/pointer/resolve", {
+                "base":    f"0x{base:016X}",
+                "offsets": [f"0x{o:X}" for o in offsets],
+            })
+            v = r.get("result")
+            return int(v, 16) if v else None
+        except Exception:
+            return None
+
+
+class RemoteDMAProxy:
+    """Drop-in replacement for DMADevice that forwards all calls to the API server."""
+
+    def __init__(self, host: str, port: int, token: str = "") -> None:
+        self._http        = _RemoteHTTP(host, port, token)
+        self._device_type = "remote"
+
+    def connect(self) -> None:
+        # Verify connectivity and optionally trigger server-side connect
+        status = self._http.get("/api/status")
+        if not status.get("connected"):
+            # Attempt to connect the server's device using whatever type it was
+            # started with (the server stores its device_type).
+            dtype = status.get("device_type", "fpga")
+            self._http.post("/api/connect", {"device_type": dtype})
+
+    def disconnect(self) -> None:
+        try:
+            self._http.post("/api/disconnect")
+        except Exception:
+            pass
+
+    def list_processes(self) -> List[dict]:
+        return self._http.get("/api/processes").get("processes", [])
+
+    def get_process(self, pid: int) -> RemoteProcessProxy:
+        d = self._http.post("/api/attach", {"pid": pid})
+        return RemoteProcessProxy(self._http, d["name"], d["pid"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Windows local-memory backend  (ctypes — no DMA hardware required)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_IS_WIN = sys.platform == "win32"
+
+if _IS_WIN:
+    import ctypes as _ct
+    import ctypes.wintypes as _wt
+
+    _k32  = _ct.WinDLL("kernel32", use_last_error=True)
+    _papi = _ct.WinDLL("psapi",    use_last_error=True)
+
+    PROCESS_ALL_ACCESS   = 0x1F0FFF
+    TH32CS_SNAPPROCESS   = 0x00000002
+    MEM_COMMIT           = 0x00001000
+    PAGE_NOACCESS        = 0x01
+    PAGE_GUARD           = 0x100
+
+    class _PROCESSENTRY32(_ct.Structure):
+        _fields_ = [
+            ("dwSize",              _ct.c_uint32),
+            ("cntUsage",            _ct.c_uint32),
+            ("th32ProcessID",       _ct.c_uint32),
+            ("th32DefaultHeapID",   _ct.c_void_p),   # ULONG_PTR
+            ("th32ModuleID",        _ct.c_uint32),
+            ("cntThreads",          _ct.c_uint32),
+            ("th32ParentProcessID", _ct.c_uint32),
+            ("pcPriClassBase",      _ct.c_int32),
+            ("dwFlags",             _ct.c_uint32),
+            ("szExeFile",           _ct.c_char * 260),
+        ]
+
+    class _MBI(_ct.Structure):            # MEMORY_BASIC_INFORMATION (64-bit)
+        _fields_ = [
+            ("BaseAddress",       _ct.c_uint64),
+            ("AllocationBase",    _ct.c_uint64),
+            ("AllocationProtect", _ct.c_uint32),
+            ("__align1",          _ct.c_uint32),
+            ("RegionSize",        _ct.c_uint64),
+            ("State",             _ct.c_uint32),
+            ("Protect",           _ct.c_uint32),
+            ("Type",              _ct.c_uint32),
+            ("__align2",          _ct.c_uint32),
+        ]
+
+    class _MODINFO(_ct.Structure):        # MODULEINFO
+        _fields_ = [
+            ("lpBaseOfDll", _ct.c_uint64),
+            ("SizeOfImage", _ct.c_uint32),
+            ("EntryPoint",  _ct.c_uint64),
+        ]
+
+    def _local_open(pid: int) -> int:
+        h = _k32.OpenProcess(PROCESS_ALL_ACCESS, False, pid)
+        if not h:
+            err = _ct.get_last_error()
+            msg = "Access denied — run MemEdit as Administrator." \
+                  if err == 5 else f"OpenProcess error {err}"
+            raise RuntimeError(msg)
+        return h
+
+    def _local_read(handle: int, addr: int, size: int) -> Optional[bytes]:
+        buf    = (_ct.c_char * size)()
+        n_read = _ct.c_size_t(0)
+        ok = _k32.ReadProcessMemory(
+            handle, _ct.c_void_p(addr), buf, size, _ct.byref(n_read))
+        return bytes(buf[:n_read.value]) if ok else None
+
+    def _local_write(handle: int, addr: int, data: bytes) -> bool:
+        buf = (_ct.c_char * len(data))(*data)
+        n   = _ct.c_size_t(0)
+        return bool(_k32.WriteProcessMemory(
+            handle, _ct.c_void_p(addr), buf, len(data), _ct.byref(n)))
+
+    def _local_regions(handle: int):
+        """Yield (base, size, protect) for every committed, accessible region."""
+        mbi  = _MBI()
+        addr = 0
+        sz   = _ct.sizeof(mbi)
+        while True:
+            if _k32.VirtualQueryEx(handle, _ct.c_void_p(addr),
+                                   _ct.byref(mbi), sz) != sz:
+                break
+            if (mbi.State == MEM_COMMIT
+                    and mbi.Protect != PAGE_NOACCESS
+                    and not (mbi.Protect & PAGE_GUARD)):
+                yield int(mbi.BaseAddress), int(mbi.RegionSize), int(mbi.Protect)
+            addr = int(mbi.BaseAddress) + int(mbi.RegionSize)
+            if addr >= 0x7FFFFFFFFFFF:
+                break
+
+else:
+    def _local_open(pid):   raise RuntimeError("Local mode requires Windows.")
+    def _local_read(*_):    return None
+    def _local_write(*_):   return False
+    def _local_regions(_):  return iter([])
+
+
+_PROT_STR: Dict[int, str] = {
+    0x01: "---", 0x02: "R--", 0x04: "R-X", 0x08: "RC-",
+    0x10: "-W-", 0x20: "RW-", 0x40: "RWX", 0x80: "RWC",
+}
+
+
+class _LMatch:
+    __slots__ = ("address",)
+    def __init__(self, a: int) -> None:
+        self.address = a
+
+
+class LocalScanResults:
+    def __init__(self, matches: List[_LMatch],
+                 snap: Optional[Dict[int, bytes]] = None,
+                 dt: Any = None) -> None:
+        self._matches = matches
+        self._snap    = snap or {}   # addr → bytes at scan time
+        self._dt      = dt
+
+    def __len__(self) -> int:
+        return len(self._matches)
+
+
+class LocalScannerProxy:
+    _CHUNK     = 4 * 1024 * 1024   # 4 MiB per read
+    _MAX_ADDRS = 5_000_000
+
+    def __init__(self, handle: int) -> None:
+        self._h = handle
+
+    @staticmethod
+    def _hit(cur: bytes, target: Optional[bytes], prev: Optional[bytes],
+              sn: str, v2: Optional[bytes]) -> bool:
+        if sn == "Exact":
+            return cur == target
+        if sn == "Range" and target and v2:
+            return target <= cur <= v2
+        if sn in ("Unknown / First Scan",):
+            return True
+        if sn == "Changed":
+            return cur != (prev or b"")
+        if sn == "Unchanged":
+            return cur == (prev or b"")
+        if sn == "Increased":
+            return cur > (prev or b"")
+        if sn == "Decreased":
+            return cur < (prev or b"")
+        return cur == target
+
+    def scan(self, val: Any, dt: Any, st: Any,
+             value2: Any = None) -> LocalScanResults:
+        sn     = _stype_str(st)
+        sz     = type_size(dt)
+        target = encode(val, dt) if sn != "Unknown / First Scan" else None
+        v2     = encode(value2, dt) if value2 is not None else None
+        matches: List[_LMatch]   = []
+        snap:    Dict[int, bytes] = {}
+        for base, size, _ in _local_regions(self._h):
+            if len(matches) >= self._MAX_ADDRS:
+                break
+            off = 0
+            while off < size:
+                chunk = min(self._CHUNK, size - off)
+                raw   = _local_read(self._h, base + off, chunk)
+                if not raw:
+                    off += chunk
+                    continue
+                i = 0
+                while i <= len(raw) - sz:
+                    if len(matches) >= self._MAX_ADDRS:
+                        break
+                    vraw = raw[i:i + sz]
+                    if self._hit(vraw, target, None, sn, v2):
+                        addr = base + off + i
+                        matches.append(_LMatch(addr))
+                        snap[addr] = vraw
+                    i += sz
+                off += chunk
+        return LocalScanResults(matches, snap, dt)
+
+    def next_scan(self, prev: LocalScanResults,
+                  val: Any, st: Any) -> LocalScanResults:
+        dt     = prev._dt
+        sz     = type_size(dt) if dt else 4
+        sn     = _stype_str(st)
+        target = (encode(val, dt)
+                  if val is not None and dt is not None and sn == "Exact"
+                  else None)
+        matches: List[_LMatch]   = []
+        snap:    Dict[int, bytes] = {}
+        for m in prev._matches:
+            addr     = m.address
+            prev_raw = prev._snap.get(addr, b"\x00" * sz)
+            cur_raw  = _local_read(self._h, addr, sz)
+            if not cur_raw or len(cur_raw) < sz:
+                continue
+            cur_raw = cur_raw[:sz]
+            if self._hit(cur_raw, target, prev_raw, sn, None):
+                matches.append(_LMatch(addr))
+                snap[addr] = cur_raw
+        return LocalScanResults(matches, snap, dt)
+
+    def search_string(self, text: str, dt: Any) -> LocalScanResults:
+        enc     = "utf-8" if "utf8" in _dtype_str(dt) else "utf-16-le"
+        pattern = text.encode(enc)
+        matches: List[_LMatch] = []
+        for base, size, _ in _local_regions(self._h):
+            off = 0
+            while off < size:
+                chunk = min(self._CHUNK, size - off)
+                raw   = _local_read(self._h, base + off, chunk)
+                if not raw:
+                    off += chunk
+                    continue
+                i = 0
+                while True:
+                    idx = raw.find(pattern, i)
+                    if idx == -1:
+                        break
+                    matches.append(_LMatch(base + off + idx))
+                    i = idx + len(pattern)
+                off += chunk
+        return LocalScanResults(matches)
+
+    def search_aob(self, pattern_str: str) -> LocalScanResults:
+        parts = pattern_str.split()
+        pat   = [None if p in ("?", "??") else int(p, 16) for p in parts]
+        sz    = len(pat)
+        matches: List[_LMatch] = []
+        for base, size, _ in _local_regions(self._h):
+            off = 0
+            while off < size:
+                chunk = min(self._CHUNK, size - off)
+                raw   = _local_read(self._h, base + off, chunk)
+                if not raw:
+                    off += chunk
+                    continue
+                for i in range(len(raw) - sz + 1):
+                    if all(p is None or raw[i + j] == p
+                           for j, p in enumerate(pat)):
+                        matches.append(_LMatch(base + off + i))
+                off += chunk
+        return LocalScanResults(matches)
+
+
+class LocalProcessProxy:
+    def __init__(self, handle: int, name: str, pid: int) -> None:
+        self._handle = handle
+        self.name    = name
+        self.pid     = pid
+
+    def __del__(self) -> None:
+        try:
+            _k32.CloseHandle(self._handle)  # type: ignore[name-defined]
+        except Exception:
+            pass
+
+    def read(self, address: int, size: int) -> Optional[bytes]:
+        return _local_read(self._handle, address, size)
+
+    def write(self, address: int, data: bytes) -> bool:
+        return _local_write(self._handle, address, data)
+
+    def modules(self) -> List[_RModule]:
+        if not _IS_WIN:
+            return []
+        hmodules  = (_wt.HMODULE * 2048)()  # type: ignore[name-defined]
+        cb_needed = _wt.DWORD(0)            # type: ignore[name-defined]
+        out: List[_RModule] = []
+        if not _papi.EnumProcessModules(                 # type: ignore[name-defined]
+                self._handle, hmodules,
+                _ct.sizeof(hmodules),                    # type: ignore[name-defined]
+                _ct.byref(cb_needed)):                   # type: ignore[name-defined]
+            return out
+        count = cb_needed.value // _ct.sizeof(_wt.HMODULE)  # type: ignore[name-defined]
+        mi    = _MODINFO()                                   # type: ignore[name-defined]
+        for i in range(count):
+            hmod    = hmodules[i]
+            nbuf    = _ct.create_unicode_buffer(260)         # type: ignore[name-defined]
+            pbuf    = _ct.create_unicode_buffer(1024)        # type: ignore[name-defined]
+            _papi.GetModuleBaseNameW(self._handle, hmod, nbuf, 260)     # type: ignore[name-defined]
+            _papi.GetModuleFileNameExW(self._handle, hmod, pbuf, 1024)  # type: ignore[name-defined]
+            if _papi.GetModuleInformation(                              # type: ignore[name-defined]
+                    self._handle, hmod,
+                    _ct.byref(mi), _ct.sizeof(mi)):                     # type: ignore[name-defined]
+                out.append(_RModule({
+                    "base": hex(mi.lpBaseOfDll),
+                    "size": mi.SizeOfImage,
+                    "name": nbuf.value,
+                    "path": pbuf.value,
+                }))
+        return out
+
+    def memory_regions(self) -> List[dict]:
+        return [
+            {
+                "va_start":   base,
+                "va_end":     base + size,
+                "size":       size,
+                "protection": _PROT_STR.get(protect & 0xFF, hex(protect)),
+                "type":       "",
+                "tag":        "",
+            }
+            for base, size, protect in _local_regions(self._handle)
+        ]
+
+    def scanner(self) -> LocalScannerProxy:
+        return LocalScannerProxy(self._handle)
+
+    def resolve_pointer_chain(self, base: int,
+                               offsets: List[int]) -> Optional[int]:
+        ptr = base
+        for off in offsets[:-1]:
+            raw = _local_read(self._handle, ptr + off, 8)
+            if not raw or len(raw) < 8:
+                return None
+            ptr = int.from_bytes(raw[:8], "little")
+        if offsets:
+            ptr += offsets[-1]
+        return ptr
+
+
+class LocalDMAProxy:
+    """Pure-Python local memory access using Windows ReadProcessMemory — no DMA card needed."""
+
+    def connect(self) -> None:
+        if not _IS_WIN:
+            raise RuntimeError("Local mode is only supported on Windows.")
+
+    def disconnect(self) -> None:
+        pass
+
+    def list_processes(self) -> List[dict]:
+        procs: List[dict] = []
+        if not _IS_WIN:
+            return procs
+        hsnap = _k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)  # type: ignore[name-defined]
+        if hsnap == _ct.c_void_p(-1).value:                            # type: ignore[name-defined]
+            return procs
+        pe = _PROCESSENTRY32()                                         # type: ignore[name-defined]
+        pe.dwSize = _ct.sizeof(_PROCESSENTRY32)                        # type: ignore[name-defined]
+        try:
+            if _k32.Process32First(hsnap, _ct.byref(pe)):              # type: ignore[name-defined]
+                while True:
+                    procs.append({
+                        "pid":  pe.th32ProcessID,
+                        "name": pe.szExeFile.decode("utf-8", errors="replace"),
+                    })
+                    if not _k32.Process32Next(hsnap, _ct.byref(pe)):   # type: ignore[name-defined]
+                        break
+        finally:
+            _k32.CloseHandle(hsnap)                                    # type: ignore[name-defined]
+        return procs
+
+    def get_process(self, pid: int) -> LocalProcessProxy:
+        name = next((p["name"] for p in self.list_processes()
+                     if p["pid"] == pid), f"PID {pid}")
+        return LocalProcessProxy(_local_open(pid), name, pid)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PE dump & header-fix utilities
+# ══════════════════════════════════════════════════════════════════════════════
+
+import struct as _struct
+
+# ── constants ──────────────────────────────────────────────────────────────────
+_PE_DOS_MAGIC   = 0x5A4D        # "MZ"
+_PE_NT_MAGIC    = 0x00004550    # "PE\0\0"
+_PE_OPT32       = 0x010B
+_PE_OPT64       = 0x020B
+_FILE_ALIGN_DEF = 0x200         # 512-byte file alignment default
+
+
+def _align(val: int, align: int) -> int:
+    return (val + align - 1) & ~(align - 1)
+
+
+def _read_u16(buf: bytes, off: int) -> int:
+    return _struct.unpack_from("<H", buf, off)[0]
+
+
+def _read_u32(buf: bytes, off: int) -> int:
+    return _struct.unpack_from("<I", buf, off)[0]
+
+
+def _write_u32(buf: bytearray, off: int, val: int) -> None:
+    _struct.pack_into("<I", buf, off, val & 0xFFFFFFFF)
+
+
+def _dump_module_bytes(proc: Any, base: int, size: int) -> bytes:
+    """Read the full module region from process memory in 4 MiB chunks."""
+    CHUNK = 4 * 1024 * 1024
+    out   = bytearray(size)
+    off   = 0
+    while off < size:
+        chunk = min(CHUNK, size - off)
+        raw   = proc.read(base + off, chunk)
+        if raw:
+            out[off:off + len(raw)] = raw
+        off += chunk
+    return bytes(out)
+
+
+def _fix_pe_headers(raw: bytes) -> bytes:
+    """
+    Rebuild a memory-dumped PE so it can be loaded as a DLL/EXE.
+
+    When a PE is mapped in memory:
+      • Sections are expanded to VirtualSize (page-aligned)
+      • PointerToRawData / SizeOfRawData reflect *file* layout — not memory layout
+
+    This function rewrites the section table so that:
+      • PointerToRawData = VirtualAddress  (memory dump, sections already in place)
+      • SizeOfRawData    = aligned VirtualSize
+      • FileAlignment    = SectionAlignment  (simplest valid format for a dump)
+      • Checksum         = recalculated
+
+    Returns the patched bytes (same length as input).
+    """
+    data = bytearray(raw)
+    size = len(data)
+
+    # ── validate DOS header ──────────────────────────────────────────────────
+    if size < 0x40 or _read_u16(data, 0) != _PE_DOS_MAGIC:
+        raise ValueError("Not a valid PE (bad DOS magic).")
+
+    pe_off = _read_u32(data, 0x3C)
+    if pe_off + 4 > size or _read_u32(data, pe_off) != _PE_NT_MAGIC:
+        raise ValueError("Not a valid PE (bad NT signature).")
+
+    # ── COFF file header ─────────────────────────────────────────────────────
+    coff_off    = pe_off + 4
+    num_sections = _read_u16(data, coff_off + 2)
+    opt_size    = _read_u16(data, coff_off + 16)
+    opt_off     = coff_off + 20
+    magic       = _read_u16(data, opt_off)
+
+    if magic not in (_PE_OPT32, _PE_OPT64):
+        raise ValueError(f"Unknown PE optional header magic: {magic:#x}")
+
+    is64 = (magic == _PE_OPT64)
+
+    # Offsets within optional header
+    sect_align_off = opt_off + 32
+    file_align_off = opt_off + 36
+    sect_align = _read_u32(data, sect_align_off)
+    file_align = _read_u32(data, file_align_off)
+
+    # Set FileAlignment = SectionAlignment so PointerToRawData == VirtualAddress
+    _write_u32(data, file_align_off, sect_align)
+    file_align = sect_align
+
+    # ── section table ─────────────────────────────────────────────────────────
+    sect_tbl_off = opt_off + opt_size
+    for i in range(num_sections):
+        s = sect_tbl_off + i * 40
+        if s + 40 > size:
+            break
+        v_size   = _read_u32(data, s + 8)   # VirtualSize
+        v_addr   = _read_u32(data, s + 12)  # VirtualAddress (RVA)
+        raw_size = _align(v_size, file_align) if v_size else 0
+
+        # PointerToRawData → VirtualAddress  (sections sit at their RVA in the dump)
+        _write_u32(data, s + 20, v_addr)
+        # SizeOfRawData    → aligned VirtualSize
+        _write_u32(data, s + 16, raw_size)
+        # Clear characteristics that break loading
+        # (strip discardable flag 0x02000000)
+        chars = _read_u32(data, s + 36)
+        _write_u32(data, s + 36, chars & ~0x02000000)
+
+    # ── recalculate checksum ───────────────────────────────────────────────────
+    # Checksum field offset inside optional header: +64
+    chk_off = opt_off + 64
+    _write_u32(data, chk_off, 0)            # zero it first
+    checksum = 0
+    remainder = len(data) % 4
+    padded = data + b"\x00" * ((4 - remainder) % 4)
+    for i in range(0, len(padded), 4):
+        val = _struct.unpack_from("<I", padded, i)[0]
+        checksum += val
+        checksum  = (checksum & 0xFFFF) + (checksum >> 16)
+    checksum  = (checksum & 0xFFFF) + (checksum >> 16)
+    checksum += len(data)
+    _write_u32(data, chk_off, checksum & 0xFFFFFFFF)
+
+    return bytes(data)
+
+
+def _remote_kill_module(proc_handle: int, module_base: int) -> str:
+    """
+    Eject a DLL from a target process via CreateRemoteThread → FreeLibrary.
+    Returns a status string.  Windows-only, local mode only.
+    """
+    if not _IS_WIN:
+        return "Module unload only supported on Windows."
+    try:
+        # FreeLibrary address in kernel32 is the same in every process (same DLL)
+        fl_addr = _ct.cast(                                              # type: ignore
+            _k32.GetProcAddress(                                         # type: ignore
+                _k32.GetModuleHandleW("kernel32.dll"),                   # type: ignore
+                b"FreeLibrary"),
+            _ct.c_void_p).value                                          # type: ignore
+        if not fl_addr:
+            return "Could not resolve FreeLibrary address."
+        hthread = _k32.CreateRemoteThread(                               # type: ignore
+            proc_handle, None, 0,
+            _ct.c_void_p(fl_addr),                                       # type: ignore
+            _ct.c_void_p(module_base),                                   # type: ignore
+            0, None)
+        if not hthread:
+            err = _ct.get_last_error()                                   # type: ignore
+            return f"CreateRemoteThread failed (error {err})."
+        _k32.WaitForSingleObject(hthread, 5000)                          # type: ignore
+        _k32.CloseHandle(hthread)                                        # type: ignore
+        return "ok"
+    except Exception as exc:
+        return str(exc)
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -162,6 +958,12 @@ class MemEditApp(tk.Tk):
         self._addrs:    List[AddressEntry] = []
         self._live_running = False
 
+        # player list state
+        self._player_name_results: List[int] = []   # addresses found by name search
+        self._player_entries:      List[Dict] = []  # {base_addr, name, fields}
+        self._player_col_defs:     List[Dict] = []  # {label, offset, dtype, size}
+        self._player_cur_idx:      int        = -1
+
         self._apply_styles()
         self._build()
         self._set_status("Not connected — pick a device and click Connect.")
@@ -230,7 +1032,13 @@ class MemEditApp(tk.Tk):
         tb = ttk.Frame(self, padding=(8,5))
         tb.pack(fill="x")
         self._build_toolbar(tb)
-        ttk.Separator(self, orient="horizontal").pack(fill="x")
+
+        # remote connection row — shown only when device == "remote"
+        self._remote_row = ttk.Frame(self, padding=(8, 3))
+        self._build_remote_row(self._remote_row)
+
+        self._toolbar_sep = ttk.Separator(self, orient="horizontal")
+        self._toolbar_sep.pack(fill="x")
 
         # content row
         row = ttk.Frame(self)
@@ -289,6 +1097,42 @@ class MemEditApp(tk.Tk):
                                   bg=C["base"], fg=C["green"],
                                   font=("Consolas",10))
         self._lbl_proc.pack(side="left")
+
+        # Show/hide remote fields when device selection changes
+        self._dev_var.trace_add("write", self._on_device_changed)
+
+    # ─ remote connection row ───────────────────────────────────────────────────
+
+    def _build_remote_row(self, p: ttk.Frame) -> None:
+        def lbl(text: str) -> None:
+            tk.Label(p, text=text, bg=C["base"], fg=C["sub"],
+                     font=("Consolas", 10)).pack(side="left", padx=(6, 2))
+
+        lbl("Host:")
+        self._rhost = tk.StringVar(value="127.0.0.1")
+        ttk.Entry(p, textvariable=self._rhost, width=16).pack(side="left")
+
+        lbl("Port:")
+        self._rport = tk.StringVar(value="8765")
+        ttk.Entry(p, textvariable=self._rport, width=7).pack(side="left")
+
+        lbl("Token:")
+        self._rtoken = tk.StringVar()
+        ttk.Entry(p, textvariable=self._rtoken, width=20,
+                  show="●").pack(side="left")
+
+        ttk.Separator(p, orient="vertical").pack(side="left", fill="y",
+                                                  padx=8, pady=2)
+        tk.Label(p,
+                 text="Start server:  python apps/MemEdit/server.py --host 0.0.0.0 --token <secret>",
+                 bg=C["base"], fg=C["srf2"],
+                 font=("Consolas", 8)).pack(side="left")
+
+    def _on_device_changed(self, *_) -> None:
+        if self._dev_var.get() == "remote":
+            self._remote_row.pack(fill="x", before=self._toolbar_sep)
+        else:
+            self._remote_row.pack_forget()
 
     # ─ left panel ──────────────────────────────────────────────────────────────
 
@@ -352,16 +1196,19 @@ class MemEditApp(tk.Tk):
 
         self._tscan    = ttk.Frame(self._nb)
         self._tresults = ttk.Frame(self._nb)
+        self._tplayers = ttk.Frame(self._nb)
         self._tmodules = ttk.Frame(self._nb)
         self._tregions = ttk.Frame(self._nb)
 
         self._nb.add(self._tscan,    text="  🔍 Scan  ")
         self._nb.add(self._tresults, text="  📋 Results  ")
+        self._nb.add(self._tplayers, text="  🎮 Players  ")
         self._nb.add(self._tmodules, text="  📦 Modules  ")
         self._nb.add(self._tregions, text="  🗺 Regions  ")
 
         self._build_scan_tab()
         self._build_results_tab()
+        self._build_players_tab()
         self._build_modules_tab()
         self._build_regions_tab()
 
@@ -524,6 +1371,565 @@ class MemEditApp(tk.Tk):
                    style="Danger.TButton",
                    command=self._remove_addr).pack(side="right", padx=2)
 
+    # ─ players tab ─────────────────────────────────────────────────────────────
+
+    def _build_players_tab(self) -> None:
+        pad = ttk.Frame(self._tplayers, padding=8)
+        pad.pack(fill="both", expand=True)
+
+        # ── top row: search | struct config ─────────────────────────────────
+        top = ttk.Frame(pad)
+        top.pack(fill="x", pady=(0, 6))
+
+        # ─ player name search ────────────────────────────────────────────────
+        sf = ttk.LabelFrame(top, text=" Player Name Search ", padding=8)
+        sf.pack(side="left", fill="both", expand=True, padx=(0, 6))
+
+        sr = ttk.Frame(sf); sr.pack(fill="x", pady=(0, 4))
+        tk.Label(sr, text="Name:", bg=C["base"], fg=C["sub"],
+                 font=("Consolas", 10), width=6, anchor="w").pack(side="left")
+        self._pname_var = tk.StringVar()
+        ttk.Entry(sr, textvariable=self._pname_var, width=22).pack(
+            side="left", padx=(0, 6))
+        self._pname_enc = tk.StringVar(value="utf16")
+        ttk.Combobox(sr, textvariable=self._pname_enc,
+                     values=["utf8", "utf16"], width=6,
+                     state="readonly").pack(side="left", padx=(0, 6))
+        ttk.Button(sr, text="🔍 Search", style="Accent.TButton",
+                   command=self._do_player_name_search).pack(side="left")
+
+        self._pname_status = tk.Label(sf, text="", bg=C["base"],
+                                      fg=C["sub"], font=("Consolas", 9))
+        self._pname_status.pack(anchor="w", pady=(0, 2))
+
+        pncols = ("address", "preview")
+        self._pnt = ttk.Treeview(sf, columns=pncols, show="headings",
+                                  height=5, selectmode="browse")
+        self._pnt.heading("address", text="Address")
+        self._pnt.heading("preview", text="Context (±16 bytes)")
+        self._pnt.column("address", width=155, anchor="e")
+        self._pnt.column("preview", width=260)
+        pnsb = ttk.Scrollbar(sf, orient="vertical", command=self._pnt.yview)
+        self._pnt.configure(yscrollcommand=pnsb.set)
+        self._pnt.pack(side="left", fill="both", expand=True)
+        pnsb.pack(side="left", fill="y")
+
+        # ─ struct config ──────────────────────────────────────────────────────
+        cf = ttk.LabelFrame(top, text=" Struct Configuration ", padding=8)
+        cf.pack(side="left", fill="y")
+
+        def _cfg_row(parent, label, var, default):
+            r = ttk.Frame(parent); r.pack(fill="x", pady=3)
+            tk.Label(r, text=label, bg=C["base"], fg=C["sub"],
+                     font=("Consolas", 10), width=18, anchor="w").pack(side="left")
+            v = tk.StringVar(value=default)
+            ttk.Entry(r, textvariable=v, width=10).pack(side="left")
+            return v
+
+        self._pcfg_stride    = _cfg_row(cf, "Struct stride (bytes):", None, "0x100")
+        self._pcfg_nameoff   = _cfg_row(cf, "Name offset in struct:", None, "0x0")
+        self._pcfg_namesz    = _cfg_row(cf, "Name size (bytes):",     None, "32")
+        self._pcfg_maxp      = _cfg_row(cf, "Max players:",           None, "64")
+
+        ttk.Separator(cf, orient="horizontal").pack(fill="x", pady=6)
+
+        ttk.Button(cf, text="🎮 Build Player List",
+                   style="Accent.TButton",
+                   command=self._do_build_player_list).pack(fill="x", pady=2)
+        ttk.Button(cf, text="🎮 Build from Selected Address",
+                   command=self._do_build_from_selected).pack(fill="x", pady=2)
+
+        tk.Label(cf,
+                 text=("Select a row in the search results\n"
+                       "then click 'Build from Selected'"),
+                 bg=C["base"], fg=C["srf2"],
+                 font=("Consolas", 8), justify="left").pack(anchor="w", pady=(4, 0))
+
+        # ── player list ───────────────────────────────────────────────────────
+        plf = ttk.LabelFrame(pad, text=" Player List ", padding=4)
+        plf.pack(fill="both", expand=True)
+
+        # toolbar
+        ptb = ttk.Frame(plf); ptb.pack(fill="x", pady=(0, 4))
+        ttk.Button(ptb, text="↺ Refresh",
+                   command=self._do_player_refresh).pack(side="left", padx=2)
+        ttk.Button(ptb, text="+ Add Column…",
+                   command=self._player_add_col).pack(side="left", padx=2)
+        ttk.Button(ptb, text="✕ Remove Column",
+                   command=self._player_remove_col).pack(side="left", padx=2)
+        ttk.Separator(ptb, orient="vertical").pack(side="left", fill="y", padx=6)
+        ttk.Button(ptb, text="◀",
+                   command=lambda: self._player_nav(-1)).pack(side="left", padx=1)
+        self._player_nav_lbl = tk.Label(ptb, text="  —  ",
+                                         bg=C["base"], fg=C["sub"],
+                                         font=("Consolas", 10))
+        self._player_nav_lbl.pack(side="left")
+        ttk.Button(ptb, text="▶",
+                   command=lambda: self._player_nav(+1)).pack(side="left", padx=1)
+        ttk.Separator(ptb, orient="vertical").pack(side="left", fill="y", padx=6)
+        ttk.Button(ptb, text="📌 Add to Address List",
+                   command=self._player_add_to_addr).pack(side="left", padx=2)
+        ttk.Button(ptb, text="✎ Edit Field",
+                   command=self._player_edit_field).pack(side="left", padx=2)
+
+        # player tree frame (holds tree + scrollbars)
+        self._player_tree_frame = ttk.Frame(plf)
+        self._player_tree_frame.pack(fill="both", expand=True)
+        self._player_tree: Optional[ttk.Treeview] = None
+        self._rebuild_player_tree()
+
+    def _rebuild_player_tree(self) -> None:
+
+        """Destroy and recreate the player treeview with current column defs."""
+        for w in self._player_tree_frame.winfo_children():
+            w.destroy()
+
+        base_cols = ("idx", "address", "name")
+        extra_cols = tuple(f"col{i}" for i in range(len(self._player_col_defs)))
+        all_cols = base_cols + extra_cols
+
+        self._player_tree = ttk.Treeview(
+            self._player_tree_frame,
+            columns=all_cols,
+            show="headings",
+            selectmode="browse",
+        )
+        self._player_tree.heading("idx",     text="#")
+        self._player_tree.heading("address", text="Address")
+        self._player_tree.heading("name",    text="Name")
+        self._player_tree.column("idx",     width=40,  anchor="e", stretch=False)
+        self._player_tree.column("address", width=155, anchor="e", stretch=False)
+        self._player_tree.column("name",    width=160)
+
+        for i, cd in enumerate(self._player_col_defs):
+            cid = f"col{i}"
+            self._player_tree.heading(cid, text=cd["label"])
+            self._player_tree.column(cid, width=110)
+
+        ptsb = ttk.Scrollbar(self._player_tree_frame, orient="vertical",
+                              command=self._player_tree.yview)
+        self._player_tree.configure(yscrollcommand=ptsb.set)
+        self._player_tree.pack(side="left", fill="both", expand=True)
+        ptsb.pack(side="left", fill="y")
+        self._player_tree.bind("<<TreeviewSelect>>",
+                               lambda _: self._on_player_select())
+        self._populate_player_tree()
+
+    def _populate_player_tree(self) -> None:
+        if self._player_tree is None:
+            return
+        self._player_tree.delete(*self._player_tree.get_children())
+        for i, entry in enumerate(self._player_entries):
+            tag = "cur" if i == self._player_cur_idx else ""
+            vals = [str(i + 1),
+                    f"0x{entry['base_addr']:016X}",
+                    entry["name"]]
+            vals += [_fmt(v) for v in entry.get("fields", [])]
+            iid = self._player_tree.insert("", "end", values=vals, tags=(tag,))
+            if i == self._player_cur_idx:
+                self._player_tree.selection_set(iid)
+                self._player_tree.see(iid)
+        self._player_tree.tag_configure("cur",
+                                         background=C["mauve"],
+                                         foreground=C["base"])
+        total = len(self._player_entries)
+        cur   = self._player_cur_idx + 1 if self._player_cur_idx >= 0 else 0
+        self._player_nav_lbl.config(
+            text=f"  {cur} / {total}  " if total else "  —  ")
+
+    # ─ player actions ──────────────────────────────────────────────────────────
+
+    def _do_player_name_search(self) -> None:
+        if not self._need_proc():
+            return
+        name = self._pname_var.get().strip()
+        if not name:
+            messagebox.showwarning("Empty", "Enter a player name to search for.")
+            return
+        enc = self._pname_enc.get()
+        dt  = DataType.STRING_UTF8 if enc == "utf8" else DataType.STRING_UTF16
+        self._pname_status.config(text="⏳ Searching…", fg=C["yellow"])
+
+        def _work():
+            try:
+                t0  = time.time()
+                res = self._scanner.search_string(name, dt)
+                elapsed = time.time() - t0
+                addrs = [m.address for m in res._matches]
+                self.after(0, lambda: self._on_player_name_found(addrs, elapsed))
+            except Exception as exc:
+                self.after(0, lambda:
+                    self._pname_status.config(
+                        text=f"✗ {exc}", fg=C["red"]))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_player_name_found(self, addrs: List[int], elapsed: float) -> None:
+        self._player_name_results = addrs
+        self._pnt.delete(*self._pnt.get_children())
+        for addr in addrs[:500]:
+            preview = ""
+            if self._proc:
+                try:
+                    raw = self._proc.read(addr, 32)
+                    enc = self._pname_enc.get()
+                    if raw:
+                        if enc == "utf16":
+                            preview = raw.decode("utf-16-le", errors="replace")[:16]
+                        else:
+                            preview = raw.decode("utf-8",  errors="replace")[:16]
+                        preview = repr(preview.rstrip("\x00"))
+                except Exception:
+                    preview = ""
+            self._pnt.insert("", "end",
+                values=(f"0x{addr:016X}", preview))
+        self._pname_status.config(
+            text=f"✔  {len(addrs)} location(s) found in {elapsed:.2f}s",
+            fg=C["green"] if addrs else C["red"])
+
+    def _parse_pcfg(self):
+        """Return (stride, name_off, name_sz, max_p) or None on error."""
+        try:
+            stride  = int(self._pcfg_stride.get(),  0)
+            nameoff = int(self._pcfg_nameoff.get(), 0)
+            namesz  = int(self._pcfg_namesz.get(),  0)
+            maxp    = int(self._pcfg_maxp.get(),    0)
+            if stride <= 0:
+                raise ValueError("Stride must be > 0")
+            return stride, nameoff, namesz, maxp
+        except ValueError as exc:
+            messagebox.showerror("Config error", str(exc))
+            return None
+
+    def _read_player_name(self, base_addr: int,
+                          name_off: int, name_sz: int) -> str:
+        """Read a fixed-length name string from base_addr + name_off."""
+        if not self._proc:
+            return ""
+        try:
+            raw = self._proc.read(base_addr + name_off, name_sz)
+            if not raw:
+                return ""
+            enc = self._pname_enc.get()
+            if enc == "utf16":
+                return raw.decode("utf-16-le", errors="replace").rstrip("\x00")
+            return raw.decode("utf-8", errors="replace").rstrip("\x00")
+        except Exception:
+            return ""
+
+    def _build_player_entries(self, list_base: int,
+                               stride: int, name_off: int,
+                               name_sz: int, max_p: int) -> List[Dict]:
+        """Walk an array of player structs starting at list_base."""
+        entries = []
+        for i in range(max_p):
+            base = list_base + i * stride
+            name = self._read_player_name(base, name_off, name_sz)
+            if not name:
+                continue  # skip empty slots
+            fields = []
+            for cd in self._player_col_defs:
+                try:
+                    dt  = DataType(cd["dtype"])
+                    raw = self._proc.read(base + cd["offset"], cd["size"])
+                    fields.append(decode(raw, dt) if raw else None)
+                except Exception:
+                    fields.append(None)
+            entries.append({"base_addr": base, "name": name,
+                             "fields": fields})
+        return entries
+
+    def _do_build_player_list(self) -> None:
+        """Ask user for the base address of the player array directly."""
+        if not self._need_proc():
+            return
+        cfg = self._parse_pcfg()
+        if cfg is None:
+            return
+        stride, name_off, name_sz, max_p = cfg
+        base_str = simpledialog.askstring(
+            "Player array base address",
+            "Enter the base address of the player array\n"
+            "(hex OK, e.g. 0x1234ABCD):",
+            parent=self)
+        if base_str is None:
+            return
+        try:
+            list_base = int(base_str, 0)
+        except ValueError as exc:
+            messagebox.showerror("Parse error", str(exc))
+            return
+        self._set_status("Building player list…")
+        self.after(10, lambda:
+            self._finish_build(list_base, stride, name_off, name_sz, max_p))
+
+    def _do_build_from_selected(self) -> None:
+        """Use a selected name-search result as the anchor to find the array."""
+        if not self._need_proc():
+            return
+        sel = self._pnt.selection()
+        if not sel:
+            messagebox.showinfo("Nothing selected",
+                "Search for a name first, then select a result row.")
+            return
+        cfg = self._parse_pcfg()
+        if cfg is None:
+            return
+        stride, name_off, name_sz, max_p = cfg
+
+        addr_str = self._pnt.item(sel[0], "values")[0]
+        found_addr = int(addr_str, 16)
+
+        # The name field is at found_addr = struct_base + name_off
+        # So struct_base of this player = found_addr - name_off
+        player_base = found_addr - name_off
+
+        # Align to stride boundary to guess list start
+        # Walk backwards up to max_p/2 steps while names are non-empty
+        list_base = player_base
+        for _ in range(max_p):
+            prev = list_base - stride
+            test = self._read_player_name(prev, name_off, name_sz)
+            if test:
+                list_base = prev
+            else:
+                break
+
+        self._set_status("Building player list…")
+        self.after(10, lambda:
+            self._finish_build(list_base, stride, name_off, name_sz, max_p))
+
+    def _finish_build(self, list_base: int, stride: int,
+                       name_off: int, name_sz: int, max_p: int) -> None:
+        entries = self._build_player_entries(
+            list_base, stride, name_off, name_sz, max_p)
+        self._player_entries = entries
+        self._player_cur_idx = 0 if entries else -1
+        self._rebuild_player_tree()
+        self._set_status(
+            f"Player list built — {len(entries)} player(s) found "
+            f"starting at 0x{list_base:016X} (stride 0x{stride:X}")
+        if entries:
+            self._nb.select(self._tplayers)
+
+    def _do_player_refresh(self) -> None:
+        """Re-read names and extra fields for all known player entries."""
+        if not self._proc or not self._player_entries:
+            return
+        cfg = self._parse_pcfg()
+        if cfg is None:
+            return
+        _, name_off, name_sz, _ = cfg
+        for entry in self._player_entries:
+            entry["name"] = self._read_player_name(
+                entry["base_addr"], name_off, name_sz)
+            fields = []
+            for cd in self._player_col_defs:
+                try:
+                    dt  = DataType(cd["dtype"])
+                    raw = self._proc.read(
+                        entry["base_addr"] + cd["offset"], cd["size"])
+                    fields.append(decode(raw, dt) if raw else None)
+                except Exception:
+                    fields.append(None)
+            entry["fields"] = fields
+        self._populate_player_tree()
+        self._set_status(f"Player list refreshed ({len(self._player_entries)} entries).")
+
+    def _on_player_select(self) -> None:
+        if self._player_tree is None:
+            return
+        sel = self._player_tree.selection()
+        if not sel:
+            return
+        idx = self._player_tree.index(sel[0])
+        if 0 <= idx < len(self._player_entries):
+            self._player_cur_idx = idx
+            self._player_nav_lbl.config(
+                text=f"  {idx + 1} / {len(self._player_entries)}  ")
+
+    def _player_nav(self, delta: int) -> None:
+        if not self._player_entries:
+            return
+        n = len(self._player_entries)
+        self._player_cur_idx = max(0, min(n - 1,
+                                           self._player_cur_idx + delta))
+        self._populate_player_tree()
+
+    def _player_add_col(self) -> None:
+        """Dialog to add a monitored offset column to the player list."""
+        dlg = tk.Toplevel(self)
+        dlg.title("Add Column")
+        dlg.configure(bg=C["base"])
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        def lbl(parent, text):
+            tk.Label(parent, text=text, bg=C["base"], fg=C["sub"],
+                     font=("Consolas", 10), width=14, anchor="w").pack(side="left")
+
+        for r_text, var_name, default in [
+            ("Column label:",         "_dlg_clabel", "Health"),
+            ("Offset in struct (hex):","_dlg_coffset","0x10"),
+        ]:
+            r = ttk.Frame(dlg, padding=(12, 4)); r.pack(fill="x")
+            lbl(r, r_text)
+            v = tk.StringVar(value=default)
+            setattr(dlg, var_name, v)
+            ttk.Entry(r, textvariable=v, width=18).pack(side="left")
+
+        r = ttk.Frame(dlg, padding=(12, 4)); r.pack(fill="x")
+        lbl(r, "Data type:")
+        dlg._dlg_dtype = tk.StringVar(value="float")
+        ttk.Combobox(r, textvariable=dlg._dlg_dtype,
+                     values=_DATA_TYPES, width=14,
+                     state="readonly").pack(side="left")
+
+        def _ok():
+            try:
+                label  = dlg._dlg_clabel.get().strip() or "?"
+                offset = int(dlg._dlg_coffset.get(), 0)
+                dtype  = dlg._dlg_dtype.get()
+                size   = _tsz(DataType(dtype))
+                self._player_col_defs.append(
+                    {"label": label, "offset": offset,
+                     "dtype": dtype, "size": size})
+                dlg.destroy()
+                self._rebuild_player_tree()
+            except Exception as exc:
+                messagebox.showerror("Error", str(exc), parent=dlg)
+
+        bf = ttk.Frame(dlg, padding=(12, 8)); bf.pack()
+        ttk.Button(bf, text="Add",  style="Accent.TButton",
+                   command=_ok).pack(side="left", padx=4)
+        ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="left", padx=4)
+
+    def _player_remove_col(self) -> None:
+        if not self._player_col_defs:
+            return
+        labels = [cd["label"] for cd in self._player_col_defs]
+        choice = simpledialog.askstring(
+            "Remove column",
+            "Column label to remove:\n" + "\n".join(labels),
+            parent=self)
+        if choice is None:
+            return
+        self._player_col_defs = [
+            cd for cd in self._player_col_defs
+            if cd["label"] != choice]
+        self._rebuild_player_tree()
+
+    def _player_add_to_addr(self) -> None:
+        """Add the selected player's base address (or a specific field) to the address list."""
+        if self._player_tree is None:
+            return
+        sel = self._player_tree.selection()
+        if not sel:
+            if 0 <= self._player_cur_idx < len(self._player_entries):
+                idx = self._player_cur_idx
+            else:
+                messagebox.showinfo("None selected", "Select a player first.")
+                return
+        else:
+            idx = self._player_tree.index(sel[0])
+
+        entry = self._player_entries[idx]
+
+        choices = ["base struct address"]
+        choices += [f"{cd['label']} (+0x{cd['offset']:X})  [{cd['dtype']}]"
+                    for cd in self._player_col_defs]
+        if len(choices) == 1:
+            # Only base address available
+            addr = entry["base_addr"]
+            if not any(e.address == addr for e in self._addrs):
+                self._addrs.append(
+                    AddressEntry(addr, 0, DataType("uint8"),
+                                 label=entry["name"]))
+                self._refresh_addr_tree()
+                self._set_status(f"Added {entry['name']} base @ 0x{addr:016X}")
+            return
+
+        choice = simpledialog.askinteger(
+            "Add to address list",
+            "Which field?\n" +
+            "\n".join(f"  {i}: {c}" for i, c in enumerate(choices)) +
+            "\n\nEnter number:",
+            parent=self, minvalue=0, maxvalue=len(choices) - 1)
+        if choice is None:
+            return
+
+        if choice == 0:
+            addr  = entry["base_addr"]
+            dtype = DataType("uint8")
+            label = entry["name"] + " (base)"
+        else:
+            cd    = self._player_col_defs[choice - 1]
+            addr  = entry["base_addr"] + cd["offset"]
+            dtype = DataType(cd["dtype"])
+            label = f"{entry['name']}.{cd['label']}"
+
+        if not any(e.address == addr for e in self._addrs):
+            self._addrs.append(AddressEntry(addr, 0, dtype, label=label))
+            self._refresh_addr_tree()
+            self._set_status(f"Added '{label}' @ 0x{addr:016X} to address list.")
+
+    def _player_edit_field(self) -> None:
+        """Write a new value to the selected player's selected column field."""
+        if not self._proc or not self._player_col_defs:
+            messagebox.showinfo("No columns",
+                "Add at least one column before editing a field.")
+            return
+        if self._player_tree is None:
+            return
+        sel = self._player_tree.selection()
+        if not sel:
+            messagebox.showinfo("None selected", "Select a player row first.")
+            return
+        idx = self._player_tree.index(sel[0])
+        if not (0 <= idx < len(self._player_entries)):
+            return
+        entry = self._player_entries[idx]
+
+        labels = [f"{i+1}: {cd['label']} (+0x{cd['offset']:X})  [{cd['dtype']}]"
+                  for i, cd in enumerate(self._player_col_defs)]
+        col_str = simpledialog.askstring(
+            "Select field",
+            "Which column to edit?\n" + "\n".join(labels) +
+            "\n\nEnter number (1…{}):" .format(len(self._player_col_defs)),
+            parent=self)
+        if col_str is None:
+            return
+        try:
+            col_idx = int(col_str) - 1
+            cd = self._player_col_defs[col_idx]
+        except (ValueError, IndexError):
+            messagebox.showerror("Error", "Invalid column number.")
+            return
+
+        addr   = entry["base_addr"] + cd["offset"]
+        dt     = DataType(cd["dtype"])
+        cur_v  = _fmt(entry["fields"][col_idx]) if entry["fields"] else ""
+        new_s  = simpledialog.askstring(
+            "Edit field",
+            f"New value for {entry['name']}.{cd['label']}\n"
+            f"(addr 0x{addr:016X}, type {cd['dtype']}):",
+            parent=self, initialvalue=cur_v)
+        if new_s is None:
+            return
+        try:
+            val = _parse_val(new_s, dt)
+            ok  = self._proc.write(addr, encode(val, dt))
+            if ok:
+                entry["fields"][col_idx] = val
+                self._populate_player_tree()
+                self._set_status(
+                    f"Written {entry['name']}.{cd['label']} = {_fmt(val)}")
+            else:
+                messagebox.showerror("Write failed",
+                    f"Could not write to 0x{addr:016X}")
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc))
+
     # ─ modules tab ─────────────────────────────────────────────────────────────
 
     def _build_modules_tab(self) -> None:
@@ -531,6 +1937,9 @@ class MemEditApp(tk.Tk):
         top.pack(fill="x")
         ttk.Button(top, text="↺ Refresh",
                    command=self._refresh_modules).pack(side="left")
+        tk.Label(top, text="  Right-click a module for options",
+                 bg=C["base"], fg=C["srf2"],
+                 font=("Consolas", 9)).pack(side="left", padx=8)
 
         f = ttk.Frame(self._tmodules, padding=6)
         f.pack(fill="both", expand=True)
@@ -553,6 +1962,146 @@ class MemEditApp(tk.Tk):
         msbx.grid(row=1, column=0, sticky="ew")
         f.rowconfigure(0, weight=1)
         f.columnconfigure(0, weight=1)
+
+        # right-click context menu
+        self._mod_menu = tk.Menu(self, tearoff=0,
+                                  bg=C["srf0"], fg=C["text"],
+                                  activebackground=C["blue"],
+                                  activeforeground=C["base"])
+        self._mod_menu.add_command(label="📥  Dump module to DLL…",
+                                    command=self._mod_dump)
+        self._mod_menu.add_command(label="🔧  Dump + Fix PE headers…",
+                                    command=self._mod_dump_fix)
+        self._mod_menu.add_separator()
+        self._mod_menu.add_command(label="💀  Unload module (FreeLibrary)",
+                                    command=self._mod_kill)
+        self._mod_menu.add_separator()
+        self._mod_menu.add_command(label="✕  Remove from list",
+                                    command=self._mod_remove_row)
+        self._mt.bind("<Button-3>", self._mod_ctx_menu)
+
+    def _mod_ctx_menu(self, event: tk.Event) -> None:
+        row = self._mt.identify_row(event.y)
+        if row:
+            self._mt.selection_set(row)
+            self._mod_menu.tk_popup(event.x_root, event.y_root)
+
+    def _mod_selected(self) -> Optional[tuple]:
+        """Return (base_int, size_int, name, path) for the selected module row."""
+        sel = self._mt.selection()
+        if not sel:
+            messagebox.showwarning("No selection", "Select a module first.")
+            return None
+        vals = self._mt.item(sel[0], "values")
+        base = int(vals[0], 16)
+        size = int(vals[1], 16)
+        name = vals[2]
+        path = vals[3]
+        return base, size, name, path
+
+    def _mod_dump(self) -> None:
+        """Dump module bytes as-is from memory to a .dll file."""
+        info = self._mod_selected()
+        if not info:
+            return
+        base, size, name, _ = info
+        from tkinter.filedialog import asksaveasfilename
+        dest = asksaveasfilename(
+            defaultextension=".dll",
+            initialfile=name,
+            filetypes=[("DLL / EXE", "*.dll *.exe *.sys"), ("All files", "*.*")],
+            title="Dump module to file")
+        if not dest:
+            return
+        self._set_status(f"Dumping {name} ({size:#x} bytes)…")
+
+        def _work():
+            try:
+                raw = _dump_module_bytes(self._proc, base, size)
+                with open(dest, "wb") as fh:
+                    fh.write(raw)
+                self.after(0, lambda: self._set_status(
+                    f"Dumped {name} → {dest}  ({len(raw):,} bytes)"))
+            except Exception as exc:
+                self.after(0, lambda e=exc: (
+                    messagebox.showerror("Dump failed", str(e)),
+                    self._set_status(f"Dump failed: {e}")))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _mod_dump_fix(self) -> None:
+        """Dump module from memory, fix PE headers, save."""
+        info = self._mod_selected()
+        if not info:
+            return
+        base, size, name, _ = info
+        from tkinter.filedialog import asksaveasfilename
+        dest = asksaveasfilename(
+            defaultextension=".dll",
+            initialfile=f"fixed_{name}",
+            filetypes=[("DLL / EXE", "*.dll *.exe *.sys"), ("All files", "*.*")],
+            title="Dump + fix PE headers — save to file")
+        if not dest:
+            return
+        self._set_status(f"Dumping & fixing PE for {name}…")
+
+        def _work():
+            try:
+                raw   = _dump_module_bytes(self._proc, base, size)
+                fixed = _fix_pe_headers(raw)
+                with open(dest, "wb") as fh:
+                    fh.write(fixed)
+                self.after(0, lambda: self._set_status(
+                    f"Fixed PE dump of {name} → {dest}  ({len(fixed):,} bytes)"))
+            except Exception as exc:
+                self.after(0, lambda e=exc: (
+                    messagebox.showerror("Dump/fix failed", str(e)),
+                    self._set_status(f"Dump/fix failed: {e}")))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _mod_kill(self) -> None:
+        """Eject the module from the target process via FreeLibrary remote thread."""
+        info = self._mod_selected()
+        if not info:
+            return
+        base, size, name, _ = info
+        if not messagebox.askyesno(
+                "Unload module",
+                f"Unload  {name}  (base {base:#x})  from the target process?\n\n"
+                "This calls FreeLibrary via a remote thread and may crash the process."):
+            return
+
+        # Need the native process handle — only available in local mode
+        handle = getattr(getattr(self._proc, "_handle", None), "value",
+                         getattr(self._proc, "_handle", None))
+        if handle is None:
+            messagebox.showwarning(
+                "Not supported",
+                "Module unload via FreeLibrary is only supported in 'local' mode\n"
+                "(requires a direct process handle).")
+            return
+
+        self._set_status(f"Unloading {name}…")
+
+        def _work():
+            result = _remote_kill_module(handle, base)
+            if result == "ok":
+                self.after(0, lambda: (
+                    self._set_status(f"Unloaded {name}."),
+                    self._refresh_modules()))
+            else:
+                self.after(0, lambda r=result: (
+                    messagebox.showerror("Unload failed", r),
+                    self._set_status(f"Unload failed: {r}")))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _mod_remove_row(self) -> None:
+        """Remove the selected row from the list display (does not affect the process)."""
+        sel = self._mt.selection()
+        if sel:
+            self._mt.delete(sel[0])
 
     # ─ regions tab ─────────────────────────────────────────────────────────────
 
@@ -591,12 +2140,60 @@ class MemEditApp(tk.Tk):
     # ══════════════════════════════════════════════════════════════════════════
 
     def _do_connect(self) -> None:
+        dev_type = self._dev_var.get()
+
+        # ── Local (Windows ReadProcessMemory, no DMA) ─────────────────────────
+        if dev_type == "local":
+            self._set_status("Connecting (local mode)\u2026")
+            self._btn_conn.config(state="disabled")
+
+            def _local_work():
+                try:
+                    proxy = LocalDMAProxy()
+                    proxy.connect()
+                    self._dev = proxy
+                    self.after(0, self._on_connected)
+                except Exception as exc:
+                    self.after(0, lambda e=exc: self._on_conn_fail(str(e)))
+
+            threading.Thread(target=_local_work, daemon=True).start()
+            return
+
+        # ── Remote connection ──────────────────────────────────────────────────
+        if dev_type == "remote":
+            host  = self._rhost.get().strip()
+            port  = self._rport.get().strip()
+            token = self._rtoken.get().strip()
+            if not host or not port:
+                messagebox.showwarning("Remote", "Enter host and port."); return
+            try:
+                port_int = int(port)
+            except ValueError:
+                messagebox.showerror("Port", "Port must be a number."); return
+
+            self._set_status(f"Connecting to remote {host}:{port_int}…")
+            self._btn_conn.config(state="disabled")
+
+            def _remote_work():
+                try:
+                    proxy = RemoteDMAProxy(host, port_int, token)
+                    proxy.connect()
+                    self._dev = proxy
+                    self.after(0, self._on_connected)
+                except Exception as exc:
+                    self.after(0, lambda e=exc: self._on_conn_fail(str(e)))
+
+            threading.Thread(target=_remote_work, daemon=True).start()
+            return
+
+        # ── Local DMA connection ───────────────────────────────────────────────
         if not HAS_DMA:
             messagebox.showerror(
                 "Missing dependency",
-                f"dma_memory not importable:\n{_DMA_ERR}\n\npip install memprocfs")
+                f"dma_memory not importable:\n{_DMA_ERR}\n\npip install memprocfs\n\n"
+                f"Tip: select device 'remote' to connect to a server that has it.")
             return
-        dev_type = self._dev_var.get()
+
         self._set_status(f"Connecting to {dev_type}…")
         self._btn_conn.config(state="disabled")
 
@@ -607,7 +2204,7 @@ class MemEditApp(tk.Tk):
                 self._dev = dev
                 self.after(0, self._on_connected)
             except Exception as exc:
-                self.after(0, lambda: self._on_conn_fail(str(exc)))
+                self.after(0, lambda e=exc: self._on_conn_fail(str(e)))
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -652,7 +2249,7 @@ class MemEditApp(tk.Tk):
                 procs = self._dev.list_processes()
                 self.after(0, lambda: self._load_procs(procs))
             except Exception as exc:
-                self.after(0, lambda: self._set_status(f"Process list error: {exc}"))
+                self.after(0, lambda e=exc: self._set_status(f"Process list error: {e}"))
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -690,7 +2287,7 @@ class MemEditApp(tk.Tk):
                 scanner = proc.scanner()
                 self.after(0, lambda: self._on_attached(proc, scanner))
             except Exception as exc:
-                self.after(0, lambda: self._set_status(f"Attach failed: {exc}"))
+                self.after(0, lambda e=exc: self._set_status(f"Attach failed: {e}"))
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -791,7 +2388,7 @@ class MemEditApp(tk.Tk):
                 elapsed = time.time() - t0
                 self.after(0, lambda: self._on_scan_done(res, elapsed))
             except Exception as exc:
-                self.after(0, lambda: self._on_scan_err(str(exc)))
+                self.after(0, lambda e=exc: self._on_scan_err(str(e)))
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -815,7 +2412,7 @@ class MemEditApp(tk.Tk):
                 elapsed = time.time() - t0
                 self.after(0, lambda: self._on_scan_done(res, elapsed))
             except Exception as exc:
-                self.after(0, lambda: self._on_scan_err(str(exc)))
+                self.after(0, lambda e=exc: self._on_scan_err(str(e)))
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -853,7 +2450,7 @@ class MemEditApp(tk.Tk):
                 elapsed = time.time() - t0
                 self.after(0, lambda: self._on_scan_done(res, elapsed))
             except Exception as exc:
-                self.after(0, lambda: self._on_scan_err(str(exc)))
+                self.after(0, lambda e=exc: self._on_scan_err(str(e)))
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -873,7 +2470,7 @@ class MemEditApp(tk.Tk):
                 elapsed = time.time() - t0
                 self.after(0, lambda: self._on_scan_done(res, elapsed))
             except Exception as exc:
-                self.after(0, lambda: self._on_scan_err(str(exc)))
+                self.after(0, lambda e=exc: self._on_scan_err(str(e)))
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -1131,12 +2728,8 @@ class MemEditApp(tk.Tk):
 # ── entry point ────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    if not HAS_DMA:
-        root = tk.Tk(); root.withdraw()
-        messagebox.showerror("Missing dependency",
-            f"dma_memory could not be imported:\n{_DMA_ERR}\n\npip install memprocfs")
-        root.destroy()
-        return
+    # Allow startup even without dma_memory — remote device works without it.
+    # The error is shown only when a local device is selected and Connect is clicked.
     app = MemEditApp()
     app.mainloop()
 

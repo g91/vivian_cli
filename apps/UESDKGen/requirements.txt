@@ -1,0 +1,24 @@
+# UESDKGen — Python dependency requirements
+#
+# CORE:  UESDKGen is almost entirely Python stdlib (tkinter, ctypes, pathlib,
+#        json, datetime, threading, struct, typing).  No mandatory pip packages.
+#
+# OPTIONAL BACKENDS:
+#   • DMA / PCILeech (VmmBackend)
+#       Windows only, requires PCILeech hardware.
+#       pip install memprocfs
+#
+#   • HTTP / MemEdit server (SocketDMABackend)
+#       Pure-stdlib HTTP client — no extra packages needed in UESDKGen itself.
+#       The *server* (MemEdit) requires: pip install fastapi uvicorn
+#
+# OS-LEVEL TKINTER (NOT a pip package — use your system package manager):
+#   Debian/Ubuntu:  sudo apt-get install python3-tk          # or python3.12-tk
+#   Fedora/RHEL:    sudo dnf install python3-tkinter
+#   Arch/Manjaro:   sudo pacman -S tk
+#   macOS Homebrew: brew install python-tk@3.12
+#   Windows:        tkinter ships with the python.org installer by default
+# --------------------------------------------------------------------------
+
+# ── Optional: DMA backend via memprocfs (PCILeech, Windows only) ──────────
+memprocfs>=0.0.1 ; sys_platform == "win32"

@@ -57,8 +57,11 @@ Key highlights:
 git clone https://github.com/g91/vivian_cli.git
 cd vivian_cli
 
-# Install
-pip install -r requirements.txt
+# Install (Linux / macOS / WSL)
+./install.sh
+
+# Install (Windows — PowerShell)
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 # Run (setup wizard auto-launches on first start)
 python -m vivian_cli
@@ -69,11 +72,17 @@ vivian.bat
 
 On first run the setup wizard walks you through choosing an AI provider and entering credentials. You can skip it with `--no-wizard` or re-run it at any time with `/setup`.
 
+> **Windows note:** If you see *"running scripts is disabled on this system"*, either use the command above (`-ExecutionPolicy Bypass`) or permanently allow local scripts for your user account:
+> ```powershell
+> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+> ```
+> `RemoteSigned` lets you run local scripts freely while still requiring downloaded scripts to be signed.
+
 ### Uninstall
 
 ```bash
-./install.sh --uninstall    # Linux/macOS
-.\install.ps1 -Uninstall    # Windows
+./install.sh --uninstall                                   # Linux/macOS
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall  # Windows
 ```
 
 ---

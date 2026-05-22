@@ -168,33 +168,94 @@ echo ""
 echo -e "${BOLD}[1/6]${NC} Checking Python..."
 
 PYTHON=""
-for candidate in python3 python; do
+PYTHON_VER=""
+
+# Prefer newer patch releases; fall back gracefully
+for candidate in python3.12 python3.11 python3.10 python3 python; do
     if command -v "$candidate" &>/dev/null; then
-        ver=$("$candidate" --version 2>&1 | grep -oP '\d+\.\d+' | head -1)
-        if [ -n "$ver" ]; then
-            major=$(echo "$ver" | cut -d. -f1)
-            minor=$(echo "$ver" | cut -d. -f2)
-            if [ "$major" -ge 3 ] && [ "$minor" -ge 10 ]; then
+        _ver=$("$candidate" -c "import sys; v=sys.version_info; print(f'{v.major}.{v.minor}.{v.micro}')" 2>/dev/null || true)
+        if [ -n "$_ver" ]; then
+            _major=$(echo "$_ver" | cut -d. -f1)
+            _minor=$(echo "$_ver" | cut -d. -f2)
+            if [ "$_major" -ge 3 ] && [ "$_minor" -ge 10 ] 2>/dev/null; then
                 PYTHON="$candidate"
+                PYTHON_VER="$_ver"
                 break
             fi
         fi
     fi
 done
 
+# ── Try pyenv if no system Python 3.10+ was found ───────────────────────────
 if [ -z "$PYTHON" ]; then
-    echo -e "${RED}ERROR: Python 3.10+ is required but not found.${NC}"
+    PYENV_BIN="$(command -v pyenv 2>/dev/null || echo "$HOME/.pyenv/bin/pyenv")"
+    if [ -x "$PYENV_BIN" ]; then
+        echo -e "  ${YELLOW}⚠${NC}  System Python 3.10+ not found — trying pyenv..."
+        "$PYENV_BIN" install 3.12.9 --skip-existing -q 2>/dev/null || true
+        _pyenv_python="$("$PYENV_BIN" prefix 3.12.9 2>/dev/null)/bin/python3"
+        if [ -x "$_pyenv_python" ]; then
+            PYTHON="$_pyenv_python"
+            PYTHON_VER=$("$PYTHON" -c "import sys; v=sys.version_info; print(f'{v.major}.{v.minor}.{v.micro}')" 2>/dev/null)
+        fi
+    fi
+fi
+
+# ── Auto-install via pyenv if still missing ──────────────────────────────────
+if [ -z "$PYTHON" ]; then
+    echo -e "  ${YELLOW}⚠${NC}  Python 3.10+ not found."
+    OS_TYPE="$(uname -s)"
     echo ""
-    echo "Install Python 3.10+:"
-    echo "  Ubuntu/Debian: sudo apt install python3 python3-pip python3-venv"
-    echo "  Fedora:        sudo dnf install python3 python3-pip"
-    echo "  Arch:          sudo pacman -S python python-pip"
-    echo "  macOS:         brew install python@3.12"
-    echo "  Or download from: https://www.python.org/downloads/"
+    echo "  Install Python 3.12, then re-run this script."
+    if [[ "$OS_TYPE" == "Linux" ]]; then
+        if command -v apt-get &>/dev/null; then
+            echo "  Debian/Ubuntu:"
+            echo "    sudo add-apt-repository ppa:deadsnakes/ppa   # Ubuntu 20.04/22.04"
+            echo "    sudo apt-get update"
+            echo "    sudo apt-get install -y python3.12 python3.12-venv python3.12-tk"
+        elif command -v dnf &>/dev/null; then
+            echo "  Fedora/RHEL:"
+            echo "    sudo dnf install python3.12 python3.12-tkinter"
+        elif command -v pacman &>/dev/null; then
+            echo "  Arch/Manjaro:"
+            echo "    sudo pacman -S python tk"
+        fi
+    elif [[ "$OS_TYPE" == "Darwin" ]]; then
+        echo "  macOS (Homebrew):"
+        echo "    brew install python@3.12 python-tk@3.12"
+        echo "  macOS (python.org installer):"
+        echo "    https://www.python.org/downloads/release/python-3129/"
+    fi
+    echo ""
+    echo "  Any platform (pyenv):"
+    echo "    curl https://pyenv.run | bash"
+    echo "    pyenv install 3.12.9 && pyenv global 3.12.9"
+    echo "    then re-run:  ./install.sh"
     exit 1
 fi
 
-echo -e "  ${GREEN}✓${NC} Found $PYTHON $ver"
+echo -e "  ${GREEN}✓${NC} Found: $PYTHON  (Python $PYTHON_VER)"
+
+# ── 1.5: Verify tkinter (needed for GUI apps like UESDKGen) ─────────────────
+if "$PYTHON" -c "import tkinter" &>/dev/null 2>&1; then
+    echo -e "  ${GREEN}✓${NC} tkinter available"
+else
+    echo -e "  ${YELLOW}⚠${NC}  tkinter not found for $PYTHON"
+    echo "     GUI apps (e.g. UESDKGen) require tkinter."
+    PY_SHORT=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null)
+    OS_TYPE="$(uname -s)"
+    if [[ "$OS_TYPE" == "Linux" ]]; then
+        if command -v apt-get &>/dev/null; then
+            echo "     Fix:  sudo apt-get install python${PY_SHORT}-tk"
+        elif command -v dnf &>/dev/null; then
+            echo "     Fix:  sudo dnf install python3-tkinter"
+        elif command -v pacman &>/dev/null; then
+            echo "     Fix:  sudo pacman -S tk"
+        fi
+    elif [[ "$OS_TYPE" == "Darwin" ]]; then
+        echo "     Fix:  brew install python-tk@${PY_SHORT}"
+    fi
+    echo "     Continuing — the CLI works fine without tkinter."
+fi
 
 # ── Step 2: Create directories ──────────────────────────────────────────────
 echo -e "${BOLD}[2/6]${NC} Creating directories..."
@@ -253,13 +314,37 @@ source "$VENV_DIR/bin/activate"
 echo "  Upgrading pip..."
 pip install --upgrade pip -q
 
+# ── Optional extras ───────────────────────────────────────────────────────────
+EXTRAS=""
+echo ""
+echo -e "  ${BOLD}Optional feature packs${NC}  (can be added later: pip install -e \".[extra]\")"
+echo ""
+
+read -rp "  Install dev tools? (pytest, black, ruff) [Y/n] " _ans_dev
+[[ "$_ans_dev" =~ ^[Nn] ]] || EXTRAS="${EXTRAS},dev"
+
+read -rp "  Install screen-capture/vision tools? (opencv, Pillow, mss) [y/N] " _ans_pv
+[[ "$_ans_pv" =~ ^[Yy] ]] && EXTRAS="${EXTRAS},parsecvision"
+
+if [[ "$(uname -s)" == "MINGW"* ]] || [[ "$(uname -s)" == "CYGWIN"* ]] || [[ -n "${WINDIR:-}" ]]; then
+    read -rp "  Install DMA/PCILeech support? (memprocfs, Windows) [y/N] " _ans_dma
+    [[ "$_ans_dma" =~ ^[Yy] ]] && EXTRAS="${EXTRAS},dma"
+fi
+
+EXTRAS="${EXTRAS#,}"  # strip leading comma
+
+# ── Build install target ─────────────────────────────────────────────────────
+INSTALL_TARGET="$ACTUAL_SOURCE"
+[ -n "$EXTRAS" ] && INSTALL_TARGET="$ACTUAL_SOURCE[$EXTRAS]"
+
+echo ""
 echo "  Installing dependencies..."
 if [ "$DEV_MODE" = true ]; then
     # Editable install from source directory
-    pip install -e "$ACTUAL_SOURCE" -q
+    pip install -e "$INSTALL_TARGET" -q
 else
     # Install vivian_cli as a package into the venv (pulls in httpx, prompt_toolkit)
-    pip install "$ACTUAL_SOURCE" -q
+    pip install "$INSTALL_TARGET" -q
 fi
 
 echo -e "  ${GREEN}✓${NC} Python environment ready"

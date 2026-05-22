@@ -1026,6 +1026,8 @@ class VivianCLI:
         elif cmd_name == "upgrade":
             from .commands.upgrade.upgrade import call as upgradeCommand
             print(await self._invoke_local_command(upgradeCommand, args))
+        elif cmd_name == "update":
+            await self._cmd_update(args)
         elif cmd_name == "login":
             from .commands.login.login import login_cmd
             print(await self._invoke_local_command(login_cmd, args))
@@ -1305,6 +1307,7 @@ Available Commands:
   /copy              Copy last response
   /stats             Show system stats
   /doctor            Run diagnostics
+  /update [branch]   Pull latest code from GitHub (git pull origin <branch>)
   /limits            Show rate limit / quota status
   /tip               Show a tip
   /session-memory    Show session memory
@@ -1438,6 +1441,101 @@ Type any message to chat with Vivian.
                     print(f"  {m.get('summary', m.get('content', ''))[:100]}")
         except Exception as e:
             print(f"Memory unavailable: {e}")
+
+    async def _cmd_update(self, args: str = "") -> None:
+        """
+        /update [branch]
+
+        Pull the latest code for the entire project from the GitHub remote.
+        Walks up from this file until it finds a .git directory, then runs
+        `git pull` (optionally `git pull origin <branch>`).
+        Shows the git output line-by-line and prompts to restart when done.
+        """
+        import subprocess as _sp
+        from pathlib import Path as _P
+
+        tui = getattr(self, "_tui", None)
+
+        def _emit(text: str) -> None:
+            if tui:
+                from .types import Message as _Msg
+                tui.add_message(_Msg(role="system", content=text))
+            else:
+                print(text)
+
+        # ── locate git root ─────────────────────────────────────────────
+        start = _P(__file__).resolve().parent
+        git_root: "Optional[_P]" = None
+        for candidate in [start] + list(start.parents):
+            if (candidate / ".git").exists():
+                git_root = candidate
+                break
+
+        if git_root is None:
+            _emit("❌  /update: no .git directory found — is this a git repository?")
+            return
+
+        # ── show current state ─────────────────────────────────────────
+        try:
+            _branch = _sp.run(
+                ["git", "-C", str(git_root), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, timeout=10).stdout.strip()
+            _remote = _sp.run(
+                ["git", "-C", str(git_root), "remote", "get-url", "origin"],
+                capture_output=True, text=True, timeout=10).stdout.strip()
+        except Exception:
+            _branch, _remote = "unknown", "unknown"
+
+        _emit(f"🔄  Updating project from GitHub…")
+        _emit(f"    Repo root : {git_root}")
+        _emit(f"    Remote    : {_remote or '(none)'}")
+        _emit(f"    Branch    : {_branch}")
+
+        # ── build pull command ─────────────────────────────────────────
+        target_branch = args.strip() or _branch
+        pull_cmd = ["git", "-C", str(git_root), "pull", "--rebase=false",
+                    "origin", target_branch]
+
+        _emit(f"    Running   : {' '.join(pull_cmd[2:])}\n")
+
+        # ── run git pull (streaming output) ────────────────────────────
+        try:
+            proc = _sp.Popen(
+                pull_cmd,
+                stdout=_sp.PIPE, stderr=_sp.STDOUT,
+                text=True, bufsize=1)
+            lines: list[str] = []
+            if proc.stdout:
+                for line in proc.stdout:
+                    stripped = line.rstrip()
+                    lines.append(stripped)
+                    _emit(f"  {stripped}")
+            proc.wait(timeout=120)
+            rc = proc.returncode
+        except FileNotFoundError:
+            _emit("❌  git not found in PATH. Install Git and ensure it is on PATH.")
+            return
+        except _sp.TimeoutExpired:
+            _emit("❌  git pull timed out after 120 s.")
+            return
+        except Exception as exc:
+            _emit(f"❌  git pull failed: {exc}")
+            return
+
+        # ── report result ───────────────────────────────────────────────
+        if rc == 0:
+            already_up_to_date = any(
+                "already up to date" in l.lower() or
+                "already up-to-date" in l.lower()
+                for l in lines)
+            if already_up_to_date:
+                _emit("\n✅  Already up to date — no changes pulled.")
+            else:
+                _emit("\n✅  Update complete. Restart the CLI to load the new code:")
+                _emit("       python -m vivian_cli  (or  python cli_main.py)")
+        else:
+            _emit(f"\n❌  git pull exited with code {rc}.")
+            _emit("    Check the output above for merge conflicts or auth issues.")
 
     async def shutdown(self):
         """Clean shutdown."""
