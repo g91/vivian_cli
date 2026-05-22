@@ -15,6 +15,7 @@ python -m vivian_cli
 
 - [What is Vivian?](#what-is-vivian)
 - [Quick Start](#quick-start)
+- [Docker](#docker)
 - [First-Launch Setup Wizard](#first-launch-setup-wizard)
 - [AI Providers](#ai-providers)
 - [Commands Reference](#commands-reference)
@@ -74,6 +75,134 @@ On first run the setup wizard walks you through choosing an AI provider and ente
 ./install.sh --uninstall    # Linux/macOS
 .\install.ps1 -Uninstall    # Windows
 ```
+
+---
+
+## Docker
+
+Run Vivian entirely inside a container — no Python install required on the host.
+
+### Build the image
+
+```bash
+docker build -t vivian-cli .
+```
+
+### Interactive TUI (one-liner)
+
+```bash
+docker run -it --rm \
+  -v vivian-config:/root/.vivian \
+  vivian-cli
+```
+
+The named volume `vivian-config` persists your provider keys, config, and session memory across runs.
+
+### Pass API keys from your host environment
+
+```bash
+docker run -it --rm \
+  -v vivian-config:/root/.vivian \
+  -e OPENAI_API_KEY \
+  -e GROQ_API_KEY \
+  -e GEMINI_API_KEY \
+  vivian-cli
+```
+
+Any provider key environment variable set on your host is forwarded into the container with `-e VAR_NAME` (no value needed — Docker copies it automatically).
+
+### Web GUI
+
+```bash
+docker run -it --rm \
+  -p 5000:5000 \
+  -v vivian-config:/root/.vivian \
+  vivian-cli --web-gui --web-host 0.0.0.0 --no-open-browser
+```
+
+Then open `http://localhost:5000` in your browser.
+
+### Mount your project directory
+
+```bash
+docker run -it --rm \
+  -v vivian-config:/root/.vivian \
+  -v "$(pwd)":/workspace \
+  -w /workspace \
+  vivian-cli
+```
+
+Vivian's file tools (`bash`, `file_read`, `file_write`, `glob`, `grep`) then operate on your real project files.
+
+---
+
+### docker compose
+
+A `docker-compose.yml` with three profiles is included.
+
+#### Interactive TUI
+
+```bash
+docker compose run --rm tui
+```
+
+Your current directory is automatically mounted at `/workspace` inside the container.
+
+#### Web GUI (detached, auto-restarts)
+
+```bash
+docker compose up web -d
+# Open http://localhost:5000
+docker compose down
+```
+
+#### Desktop Web GUI
+
+```bash
+docker compose up desktop -d
+# Shell:  http://localhost:7979
+# IDE:    http://localhost:7878
+```
+
+#### Environment file
+
+Create a `.env` file in the project root to set keys and options once:
+
+```dotenv
+# .env — never commit this file
+OPENAI_API_KEY=sk-...
+GROQ_API_KEY=gsk_...
+GEMINI_API_KEY=AIzaSy...
+ANTHROPIC_API_KEY=sk-ant-...
+VIVIAN_PROVIDER=groq
+WEB_PORT=5000
+```
+
+Then any `docker compose` command picks them up automatically.
+
+#### With a local Ollama sidecar
+
+Uncomment the `ollama` service block in `docker-compose.yml`, then:
+
+```bash
+docker compose --profile ollama up -d
+# Inside Vivian: /provider use ollama
+```
+
+---
+
+### Docker quick-reference
+
+| Goal | Command |
+|------|---------|
+| Build image | `docker build -t vivian-cli .` |
+| Interactive TUI | `docker run -it --rm -v vivian-config:/root/.vivian vivian-cli` |
+| One-shot prompt | `docker run --rm -v vivian-config:/root/.vivian vivian-cli --prompt "explain async/await" --no-wizard` |
+| Web GUI | `docker compose up web` |
+| Desktop GUI | `docker compose up desktop` |
+| View logs | `docker compose logs -f web` |
+| Stop all services | `docker compose down` |
+| Remove config volume | `docker volume rm vivian-config` |
 
 ---
 
