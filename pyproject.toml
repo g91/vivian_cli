@@ -73,6 +73,8 @@ all = [
 [project.scripts]
 vivian = "vivian_cli.cli_main:run"
 ai = "vivian_cli.cli_main:run"
+memedit = "vivian_cli.apps.MemEdit.MemEdit:main"
+ueSDKgen = "vivian_cli.apps.UESDKGen.UESDKGen:main"
 
 [project.urls]
 Homepage = "https://github.com/g91/vivian_cli"
