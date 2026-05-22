@@ -23,7 +23,7 @@ Each profile describes how to find GObjects/GNames for a specific game:
 """
 from __future__ import annotations
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Scan patterns — UE1 / UE2 (32-bit, injected into core.dll)
@@ -740,7 +740,7 @@ GAME_PROFILES: Dict[str, Dict[str, Any]] = {
 
     "PALWORLD": {
         "name":         "Palworld (UE5)",
-        "process":      "Pal-Win64-Shipping.exe",
+        "process":      "Palworld-Win64",
         "gobj_pattern": _P_UE5_GOBJ, "gobj_mask": _P_UE5_GOBJ_MASK, "gobj_off": _P_UE5_GOBJ_OFF,
         "gnam_pattern": _P_UE5_GNAM,  "gnam_mask": _P_UE5_GNAM_MASK,  "gnam_off": _P_UE5_GNAM_OFF,
         "gobjects_va":  0x0,
@@ -987,3 +987,83 @@ ALL_SIGNATURES: list = [
     {"label": "UE5/FN",    "kind": "GObjects", "pattern": _P_UE5_GOBJ,    "mask": _P_UE5_GOBJ_MASK,    "off": _P_UE5_GOBJ_OFF,    "scan_mode": "rip", "is64": True, "adjust": 0},
     {"label": "UE5/FN",    "kind": "GNames",   "pattern": _P_UE5_FN_GNAM, "mask": _P_UE5_FN_GNAM_MASK, "off": _P_UE5_FN_GNAM_OFF, "scan_mode": "rip", "is64": True, "adjust": 0},
 ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# User profile loader
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_user_profiles(game_data_dir: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    """Load JSON profiles from *game_data_dir* and return as a GAME_PROFILES-compatible dict.
+
+    JSON files are expected to follow the format produced by DiscoveredOffsets.to_json_profile().
+    Already-known profile keys (present in GAME_PROFILES) are skipped.
+
+    Args:
+        game_data_dir: Path to the game_data/ directory.  Defaults to the ``game_data/``
+                       sub-folder next to this module.
+
+    Returns:
+        Dict mapping profile key → profile dict (same structure as GAME_PROFILES entries).
+    """
+    import json as _json
+    import pathlib as _pathlib
+
+    if game_data_dir is None:
+        _dir = _pathlib.Path(__file__).parent / "game_data"
+    else:
+        _dir = _pathlib.Path(game_data_dir)
+
+    profiles: Dict[str, Dict[str, Any]] = {}
+    if not _dir.exists():
+        return profiles
+
+    for _jf in sorted(_dir.glob("*.json")):
+        try:
+            data: Dict[str, Any] = _json.loads(_jf.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        key  = (data.get("key") or _jf.stem).upper()
+        arch = data.get("architecture", "x86")
+        uver = data.get("ue_version", "UE3")
+        uo   = data.get("uobject_offsets", {})
+        fe   = data.get("fname_entry_offsets", {})
+        fl   = data.get("fname_layout", {})
+
+        is_rip = uver in ("UE4", "UE5")
+        prof: Dict[str, Any] = {
+            "name":           data.get("name", key),
+            "ue_version":     uver,
+            "process":        data.get("process", ""),
+            "notes":          data.get("notes", ""),
+            "gobj_layout":    data.get("gobj_layout", "tarray"),
+            "gnam_layout":    data.get("gnam_layout", "tarray"),
+            "gobj_scan_mode": "rip" if is_rip else "deref",
+            "gnam_scan_mode": "rip" if is_rip else "deref",
+            "gobj_adjust":    0,
+            "gnam_adjust":    0,
+            "is64":           arch == "x64",
+            "name_field_off": uo.get("name_field_off", 0x2C),
+            "name_str_off":   fe.get("name_str", 0x10),
+            "name_encoding":  fe.get("name_encoding", "ascii"),
+            # VAs stored as hex strings in JSON → convert back to int
+            "gobjects_va":    int(data["gobjects_va"], 16) if isinstance(data.get("gobjects_va"), str) else data.get("gobjects_va", 0),
+            "gnames_va":      int(data["gnames_va"],   16) if isinstance(data.get("gnames_va"),   str) else data.get("gnames_va",   0),
+            # Pattern scan fields — not present in brute-forced profiles
+            "gobj_pattern":   None,
+            "gobj_mask":      "",
+            "gobj_off":       0,
+            "gnam_pattern":   None,
+            "gnam_mask":      "",
+            "gnam_off":       0,
+            # Keep full JSON data for SDK generation
+            "_json_data":     data,
+            "_from_json":     True,
+        }
+        # ProcessEvent — absent from brute-forced profiles
+        prof.update(_PE_NONE)
+
+        profiles[key] = prof
+
+    return profiles

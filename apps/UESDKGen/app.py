@@ -26,19 +26,21 @@ try:
     from .theme      import C, apply_theme
     from .backends   import MemoryBackend, NativeBackend, VmmBackend, SocketDMABackend, list_procs
     from .reader     import UE3Reader, UE4Reader, UE5Reader, PatternScanner, find_process_event
-    from .profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE, ALL_SIGNATURES, ENGINE_DEFAULTS
+    from .profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE, ALL_SIGNATURES, ENGINE_DEFAULTS, load_user_profiles
     from .codegen    import generate_sdk
     from .sdk_gen    import generate_sdk_files, LAYOUTS as SDK_LAYOUTS
     from .bruteforce import BruteForcer
+    from .utils.offsets import DiscoveredOffsets, NOT_FOUND
 except ImportError:
     from theme      import C, apply_theme          # type: ignore[no-redef]
     from backends   import (MemoryBackend, NativeBackend, VmmBackend,  # type: ignore[no-redef]
                             SocketDMABackend, list_procs)
     from reader     import UE3Reader, UE4Reader, UE5Reader, PatternScanner, find_process_event  # type: ignore[no-redef]
-    from profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE, ALL_SIGNATURES, ENGINE_DEFAULTS  # type: ignore[no-redef]
+    from profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE, ALL_SIGNATURES, ENGINE_DEFAULTS, load_user_profiles  # type: ignore[no-redef]
     from codegen    import generate_sdk            # type: ignore[no-redef]
     from sdk_gen    import generate_sdk_files, LAYOUTS as SDK_LAYOUTS  # type: ignore[no-redef]
     from bruteforce import BruteForcer             # type: ignore[no-redef]
+    from utils.offsets import DiscoveredOffsets, NOT_FOUND  # type: ignore[no-redef]
 
 
 class UESDKGenApp(tk.Tk):
@@ -82,6 +84,11 @@ class UESDKGenApp(tk.Tk):
         self._var_custom_proc_flt.trace_add("write", lambda *_: self._filter_custom_procs())
         self._custom_procs: List[Tuple[int, str]] = []
 
+        # ── Brute-force / profile-creation variables ──────────────────────
+        self._var_game_name   = tk.StringVar(value="")
+        self._var_process_exe = tk.StringVar(value="")
+        self._discovered_offsets: Optional[DiscoveredOffsets] = None
+
         # ── SDK tab variables ─────────────────────────────────────────────
         self._var_sdk_lang      = tk.StringVar(value="cpp")   # cpp|python
         self._var_sdk_target    = tk.StringVar(value="both")  # native|dma|both
@@ -92,6 +99,7 @@ class UESDKGenApp(tk.Tk):
         self._build_ui()
         self._refresh_procs()
         self._load_profile(DEFAULT_PROFILE)
+        self._load_json_profiles()
 
     # ═══════════════════════════════════════════════════════════════════════
     # UI construction
@@ -149,6 +157,7 @@ class UESDKGenApp(tk.Tk):
         profile_cb = ttk.Combobox(pf, textvariable=self._var_profile,
                                    values=PROFILE_KEYS, state="readonly", width=26)
         profile_cb.pack(padx=6, pady=(4, 2), fill="x")
+        self._profile_cb = profile_cb
         # Explicitly set the current item so the text is visible after theme application
         if DEFAULT_PROFILE in PROFILE_KEYS:
             profile_cb.current(PROFILE_KEYS.index(DEFAULT_PROFILE))
@@ -458,6 +467,7 @@ class UESDKGenApp(tk.Tk):
             ("UE2", "UE2", "#a6da95"),
             ("UE3", "UE3", "#89b4fa"),
             ("UE4", "UE4", "#cba6f7"),
+            ("UE5", "UE5", "#f38ba8"),
         ]:
             ttk.Radiobutton(eng_row, text=f"  {lbl}  ",
                             variable=self._var_custom_engine,
@@ -465,6 +475,22 @@ class UESDKGenApp(tk.Tk):
         ttk.Button(eng_lf, text="Apply Engine Defaults (offsets & encoding)",
                    command=self._apply_engine_defaults).pack(
                    fill="x", padx=6, pady=(0, 6))
+
+        # ── Game Info subsection ──────────────────────────────────────────
+        gi_lf = ttk.LabelFrame(self._custom_frame, text=" Game Info ")
+        gi_lf.pack(fill="x", padx=8, pady=(2, 2))
+        gi_row = tk.Frame(gi_lf, bg=C["base"])
+        gi_row.pack(fill="x", padx=6, pady=4)
+        tk.Label(gi_row, text="Game Name:",
+                 bg=C["base"], fg=C["subtext0"],
+                 font=("Consolas", 9)).pack(side="left")
+        ttk.Entry(gi_row, textvariable=self._var_game_name,
+                  width=22, font=("Consolas", 9)).pack(side="left", padx=(4, 12))
+        tk.Label(gi_row, text="Process EXE:",
+                 bg=C["base"], fg=C["subtext0"],
+                 font=("Consolas", 9)).pack(side="left")
+        ttk.Entry(gi_row, textvariable=self._var_process_exe,
+                  width=36, font=("Consolas", 9)).pack(side="left", padx=(4, 0))
 
         # ── Signature database scan subsection ────────────────────────────
         sd_lf = ttk.LabelFrame(
@@ -613,7 +639,11 @@ class UESDKGenApp(tk.Tk):
         ttk.Button(act_row, text="Dump Names + Objects",
                    command=self._bf_dump_all).pack(side="left", padx=(0, 6))
         ttk.Button(act_row, text="Export Game Pack…",
-                   command=self._export_pack).pack(side="left")
+                   command=self._export_pack).pack(side="left", padx=(0, 12))
+        ttk.Button(act_row, text="Discover Struct Offsets",
+                   command=self._discover_struct_offsets).pack(side="left", padx=(0, 6))
+        ttk.Button(act_row, text="Save Game Profile…",
+                   command=self._save_game_profile_json).pack(side="left")
 
     # ── SDK Output tab ───────────────────────────────────────────────────
 
@@ -768,6 +798,7 @@ class UESDKGenApp(tk.Tk):
         "UE2": ("#1e1e2e", "#a6da95"),  # green-2
         "UE3": ("#1e1e2e", "#89b4fa"),  # blue
         "UE4": ("#1e1e2e", "#cba6f7"),  # mauve/purple
+        "UE5": ("#1e1e2e", "#f38ba8"),  # red/pink
     }
 
     def _update_ue_badge(self, ue_ver: str) -> None:
@@ -1775,7 +1806,133 @@ class UESDKGenApp(tk.Tk):
         self._log(f"[+] Game pack exported → {pack_dir}")
         messagebox.showinfo("Export complete", f"Pack saved to:\n{pack_dir}")
 
+    # ── Struct offset discovery ──────────────────────────────────────────
 
+    def _discover_struct_offsets(self) -> None:
+        """Run OffsetFinder in a background thread using the current GObj/GName VAs."""
+        if not self._backend:
+            messagebox.showwarning("No backend", "Connect to a process first.")
+            return
+        try:
+            gobj_va = int(self._var_gobjects.get().strip(), 16)
+            gnam_va = int(self._var_gnames.get().strip(),   16)
+        except ValueError:
+            messagebox.showerror("Bad VA", "GObjects / GNames VA must be a hex address.")
+            return
+
+        ue_ver   = self._var_custom_engine.get()
+        is64     = self._var_64bit.get()
+        prof_key = self._var_profile.get()
+        prof     = GAME_PROFILES.get(prof_key, {})
+        gobj_layout = prof.get("gobj_layout", "fuobj_chunked" if ue_ver in ("UE4", "UE5") else "tarray")
+        gnam_layout = prof.get("gnam_layout",
+                               "namepool" if ue_ver == "UE5" else
+                               ("chunked"  if ue_ver == "UE4" else "tarray"))
+
+        def _run() -> None:
+            bf = BruteForcer(self._backend, is64=is64)
+            def _cb(msg: str, pct: float) -> None:
+                self.after(0, lambda m=msg, p=pct: (
+                    self._bf_progress_msg.set(m),
+                    self._bf_progress_var.set(p * 100),
+                ))
+            offs = bf.discover_struct_offsets(
+                gobj_va      = gobj_va,
+                gnam_va      = gnam_va,
+                ue_version   = ue_ver,
+                gobj_layout  = gobj_layout,
+                gnam_layout  = gnam_layout,
+                cb           = _cb,
+                game_name    = self._var_game_name.get().strip(),
+                process_name = self._var_process_exe.get().strip(),
+            )
+            self.after(0, lambda o=offs: self._on_offsets_discovered(o))
+
+        threading.Thread(target=_run, daemon=True).start()
+        self._bf_progress_msg.set("OffsetFinder running…")
+        self._log("[*] OffsetFinder started…")
+
+    def _on_offsets_discovered(self, offsets: "DiscoveredOffsets") -> None:
+        """Called on main thread after offset discovery completes."""
+        self._discovered_offsets = offsets
+        self._bf_progress_msg.set(f"OffsetFinder done — confidence {offsets.confidence}%")
+        self._bf_progress_var.set(100.0)
+        self._log(f"[+] OffsetFinder complete — confidence {offsets.confidence}%")
+        if offsets.uobj_class != NOT_FOUND:
+            self._log(f"    UObject:  flags=0x{offsets.uobj_flags:02X}  "
+                      f"index=0x{offsets.uobj_index:02X}  "
+                      f"class=0x{offsets.uobj_class:02X}  "
+                      f"name=0x{offsets.uobj_name:02X}  "
+                      f"outer=0x{offsets.uobj_outer:02X}")
+        if offsets.ffield_next != NOT_FOUND:
+            self._log(f"    FField:   next=0x{offsets.ffield_next:02X}  "
+                      f"name=0x{offsets.ffield_name:02X}")
+        if offsets.ustruct_super != NOT_FOUND:
+            self._log(f"    UStruct:  super=0x{offsets.ustruct_super:02X}  "
+                      f"children=0x{offsets.ustruct_children:02X}  "
+                      f"size=0x{offsets.ustruct_size:02X}")
+
+    def _save_game_profile_json(self) -> None:
+        """Save the last DiscoveredOffsets (or current UI state) as a JSON game profile."""
+        game_data_dir = pathlib.Path(__file__).parent / "game_data"
+
+        if self._discovered_offsets is not None:
+            offs = self._discovered_offsets
+        else:
+            # Build a minimal DiscoveredOffsets from current sidebar state
+            try:
+                gobj_va = int(self._var_gobjects.get().strip(), 16)
+                gnam_va = int(self._var_gnames.get().strip(),   16)
+            except ValueError:
+                gobj_va = gnam_va = 0
+            ue_ver = self._var_custom_engine.get()
+            offs = DiscoveredOffsets(
+                ue_version   = ue_ver,
+                is64         = self._var_64bit.get(),
+                gobjects_va  = gobj_va,
+                gnames_va    = gnam_va,
+                game_name    = self._var_game_name.get().strip(),
+                process_name = self._var_process_exe.get().strip(),
+            )
+            if ue_ver == "UE5":
+                offs.apply_ue5_defaults()
+            elif ue_ver == "UE4":
+                offs.apply_ue4_defaults()
+            else:
+                offs.apply_ue3_defaults()
+
+        # Ask for a key/name
+        key = self._var_game_name.get().strip().upper().replace(" ", "_") or None
+        try:
+            out_path = BruteForcer.save_profile_json(offs, game_data_dir, key=key)
+        except Exception as exc:
+            messagebox.showerror("Save failed", str(exc))
+            return
+        self._log(f"[+] Game profile saved → {out_path}")
+        # Reload profiles into the combobox
+        self._load_json_profiles()
+        messagebox.showinfo("Saved", f"Profile saved:\n{out_path}")
+
+    def _load_json_profiles(self) -> None:
+        """Scan game_data/*.json and add any new profiles to GAME_PROFILES / combobox."""
+        game_data_dir = pathlib.Path(__file__).parent / "game_data"
+        try:
+            user_profs = load_user_profiles(str(game_data_dir))
+        except Exception:
+            return
+        added = 0
+        for k, prof in user_profs.items():
+            if k not in GAME_PROFILES:
+                GAME_PROFILES[k] = prof
+                PROFILE_KEYS.append(k)
+                added += 1
+        if added:
+            # Update combobox values if it already exists
+            try:
+                self._profile_cb["values"] = PROFILE_KEYS
+            except AttributeError:
+                pass
+            self._log(f"[*] Loaded {added} user profile(s) from game_data/")
 
     def _generate_sdk(self) -> None:
         """Inline (single-file) SDK generation — keeps existing behaviour."""

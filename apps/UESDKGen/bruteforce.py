@@ -11,16 +11,22 @@ Returns a list of DiscoveryResult dicts sorted by confidence (0-100).
 """
 from __future__ import annotations
 
+import json
+import pathlib
 from typing import Callable, Dict, List, Optional
 
 try:
     from .backends import MemoryBackend
     from .reader   import PatternScanner, UE3Reader, UE4Reader
     from .profiles import GAME_PROFILES
+    from .utils.offset_finder import OffsetFinder
+    from .utils.offsets       import DiscoveredOffsets, NOT_FOUND
 except ImportError:
     from backends import MemoryBackend   # type: ignore[no-redef]
     from reader   import PatternScanner, UE3Reader, UE4Reader  # type: ignore[no-redef]
     from profiles import GAME_PROFILES   # type: ignore[no-redef]
+    from utils.offset_finder import OffsetFinder  # type: ignore[no-redef]
+    from utils.offsets       import DiscoveredOffsets, NOT_FOUND  # type: ignore[no-redef]
 
 
 # ── Offset search spaces ──────────────────────────────────────────────────────
@@ -161,6 +167,75 @@ def _score_gnames_ue4(backend: MemoryBackend, gnames_va: int,
         if all(32 <= b < 128 for b in name) and len(name) >= 2:
             valid += 1
         tested += 1
+    return int(valid * 100 // max(tested, 1))
+
+
+def _score_gnames_namepool(backend: MemoryBackend, gnames_va: int,
+                           sample: int = 50) -> int:
+    """Return 0-100: score for UE5 FNamePool GNames (chunk-based, uint16 header per entry).
+
+    FNamePool layout:
+      +0x00  Lock
+      +0x04  ByteCursor  (int32)
+      +0x08  pad
+      +0x10  Chunks**  (array of ptr to 0x40000-byte chunks)
+    Each entry: uint16 header | char[] name (length = hdr >> shift, isWide = hdr & 1).
+    """
+    import struct as _struct
+    chunks_base = gnames_va + 0x10
+    chunk0 = backend.rptr(chunks_base, is64=True)
+    if not chunk0:
+        return 0
+    raw = backend.read(chunk0, 0x8000)
+    if not raw or len(raw) < 64:
+        return 0
+
+    # Detect length shift by searching for "ByteProperty"
+    target = b"ByteProperty"
+    length_shift = 4
+    for shift in (4, 5, 6):
+        for off in range(0, len(raw) - len(target) - 2, 2):
+            try:
+                hdr = _struct.unpack_from("<H", raw, off)[0]
+            except _struct.error:
+                break
+            entry_len = hdr >> shift
+            is_wide   = hdr & 1
+            if not is_wide and entry_len == len(target):
+                if raw[off + 2: off + 2 + entry_len] == target:
+                    length_shift = shift
+                    break
+        else:
+            continue
+        break
+
+    valid = tested = 0
+    off = 0
+    while off < len(raw) - 2 and tested < sample:
+        try:
+            hdr = _struct.unpack_from("<H", raw, off)[0]
+        except _struct.error:
+            break
+        is_wide   = hdr & 1
+        entry_len = hdr >> length_shift
+        if entry_len < 1 or entry_len > 256:
+            off += 2
+            continue
+        byte_len = entry_len * (2 if is_wide else 1)
+        name_bytes = raw[off + 2: off + 2 + byte_len]
+        if len(name_bytes) < byte_len:
+            break
+        try:
+            name = (name_bytes.decode("utf-16-le", errors="replace")
+                    if is_wide else name_bytes.decode("ascii", errors="replace"))
+            name = name.rstrip("\x00")
+        except Exception:
+            name = ""
+        if name and len(name) >= 2 and not is_wide and all(32 <= ord(c) < 128 for c in name):
+            valid += 1
+        tested += 1
+        stride = 2 + byte_len
+        off += stride + (stride % 2)
     return int(valid * 100 // max(tested, 1))
 
 
@@ -353,7 +428,7 @@ class BruteForcer:
                    0.65 + i / nd * 0.30)
             ue_ver = c.get("ue_version", "UE3")
             if ue_ver == "UE4":
-                # Score using chunked GNames reader
+                # Score using chunked GNames reader (TStaticIndirectArray)
                 score = _score_gnames_ue4(self._b, c["gnam_va"],
                                           name_str_off=0x10, sample=50)
                 if score >= 20:
@@ -366,6 +441,32 @@ class BruteForcer:
                         "pattern":        c["pattern"],
                         "source":         c["source"],
                         "ue_version":     "UE4",
+                    }
+                    results.append(result)
+                    if hit_cb:
+                        hit_cb(result)
+            elif ue_ver == "UE5":
+                # Score using FNamePool reader
+                score = _score_gnames_namepool(self._b, c["gnam_va"], sample=50)
+                if score < 10:
+                    # Fallback: try chunked layout (some UE5 games keep TStaticIndirectArray)
+                    score = _score_gnames_ue4(self._b, c["gnam_va"],
+                                              name_str_off=0x10, sample=50)
+                    gnam_layout = "chunked"
+                else:
+                    gnam_layout = "namepool"
+                if score >= 20:
+                    result = {
+                        "gobj_va":        c["gobj_va"],
+                        "gnam_va":        c["gnam_va"],
+                        "name_field_off": 0x18,
+                        "name_str_off":   0x02 if gnam_layout == "namepool" else 0x10,
+                        "confidence":     score,
+                        "pattern":        c["pattern"],
+                        "source":         c["source"],
+                        "ue_version":     "UE5",
+                        "gnam_layout":    gnam_layout,
+                        "gobj_layout":    "fuobj_chunked",
                     }
                     results.append(result)
                     if hit_cb:
@@ -391,3 +492,51 @@ class BruteForcer:
         if cb:
             cb("Discovery complete.", 1.0)
         return results
+
+    # ── Struct offset discovery ───────────────────────────────────────────
+
+    def discover_struct_offsets(self,
+                                 gobj_va:     int,
+                                 gnam_va:     int,
+                                 ue_version:  str,
+                                 gobj_layout: str = "fuobj_chunked",
+                                 gnam_layout: str = "tarray",
+                                 cb: Optional[Callable] = None,
+                                 game_name:    str = "",
+                                 process_name: str = "") -> DiscoveredOffsets:
+        """Run OffsetFinder on the given GObjects/GNames pair.
+
+        Returns a DiscoveredOffsets with all discovered struct field offsets.
+        ``cb(message, fraction)`` is an optional progress callback.
+        """
+        finder = OffsetFinder(
+            backend     = self._b,
+            gobjects_va = gobj_va,
+            gnames_va   = gnam_va,
+            is64        = self._is64,
+            ue_version  = ue_version,
+            gobj_layout = gobj_layout,
+            gnam_layout = gnam_layout,
+        )
+        return finder.find_all(
+            progress_cb  = cb,
+            game_name    = game_name,
+            process_name = process_name,
+        )
+
+    # ── Save JSON game profile ────────────────────────────────────────────
+
+    @staticmethod
+    def save_profile_json(offsets: DiscoveredOffsets,
+                           game_data_dir: pathlib.Path,
+                           key: Optional[str] = None) -> pathlib.Path:
+        """Serialise *offsets* to a JSON game profile in *game_data_dir*.
+
+        Returns the path of the written file.
+        """
+        profile  = offsets.to_json_profile(key=key)
+        safe_key = profile["key"]
+        out_path = game_data_dir / f"{safe_key}.json"
+        game_data_dir.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(profile, indent=2), encoding="utf-8")
+        return out_path
