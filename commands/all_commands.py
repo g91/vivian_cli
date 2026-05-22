@@ -129,6 +129,10 @@ COMMANDS: list[CommandDefinition] = [
         type=CommandType.PROMPT, progress_message="running diagnostics",
     ),
     CommandDefinition(
+        name="app", description="Launch a GUI app (memedit, ueSDKgen)",
+        type=CommandType.LOCAL,
+    ),
+    CommandDefinition(
         name="advisor", description="Get architectural advice",
         type=CommandType.PROMPT, progress_message="analyzing architecture",
     ),
@@ -397,6 +401,7 @@ def register_all_commands(registry: CommandRegistry):
     _wire_handler(registry, "pr_comments", "pr_comments.pr_comments", "call")
 
     _wire_handler(registry, "doctor", "doctor.doctor", "call")
+    _wire_handler(registry, "app", "app", "call")
     _wire_handler(registry, "advisor", "advisor", "call")
     _wire_handler(registry, "effort", "effort.effort", "call")
     _wire_handler(registry, "brief", "brief", "call")
