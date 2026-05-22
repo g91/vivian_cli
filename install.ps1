@@ -131,18 +131,57 @@ $pythonCandidates = @(
 
 foreach ($entry in $pythonCandidates) {
     $cmd = $entry.Cmd; $arg = $entry.Args
+    $label = if ($arg) { "$cmd $arg" } else { $cmd }
+    Write-Color "  [DBG] Trying: $label" "DarkGray"
     try {
+        # Resolve full path — skip if not found
+        $resolved = Get-Command $cmd -ErrorAction SilentlyContinue
+        if (-not $resolved) {
+            Write-Color "  [DBG]   -> not found in PATH, skipping" "DarkGray"
+            continue
+        }
+        Write-Color "  [DBG]   -> resolved: $($resolved.Source)" "DarkGray"
+
+        # Skip Windows Store stubs — they open the Store UI or hang
+        if ($resolved.Source -like "*WindowsApps*") {
+            Write-Color "  [DBG]   -> Windows Store stub, skipping" "DarkYellow"
+            continue
+        }
+
+        # Use the full resolved path to avoid any PATH re-lookup at invocation time
+        $exePath = $resolved.Source
         $verArgs = if ($arg) { @($arg, "--version") } else { @("--version") }
-        $ver = & $cmd @verArgs 2>&1
+        Write-Color "  [DBG]   -> invoking (5s timeout): $exePath $($verArgs -join ' ')" "DarkGray"
+
+        # Run in a background job with a 5-second timeout — guards against
+        # broken installs, missing DLLs, or UAC dialogs causing a hang
+        $job = Start-Job -ScriptBlock { param($p, $a); & $p @a 2>&1 } -ArgumentList $exePath, $verArgs
+        if (-not (Wait-Job $job -Timeout 5)) {
+            Remove-Job $job -Force
+            Write-Color "  [DBG]   -> timed out after 5s, skipping" "DarkYellow"
+            continue
+        }
+        $ver = (Receive-Job $job) -join " "
+        Remove-Job $job -ErrorAction SilentlyContinue
+        Write-Color "  [DBG]   -> output:   $ver" "DarkGray"
+
         if ($ver -match "Python (\d+)\.(\d+)") {
             $major = [int]$Matches[1]; $minor = [int]$Matches[2]
+            Write-Color "  [DBG]   -> parsed:   $major.$minor" "DarkGray"
             if ($major -ge 3 -and $minor -ge 10) {
-                $pythonCmd = if ($arg) { "$cmd $arg" } else { $cmd }
-                $pyVer     = $ver.ToString()
+                $pythonCmd = $exePath   # use full path so later steps don't re-lookup
+                $pyVer     = $ver.Trim()
+                Write-Color "  [DBG]   -> SELECTED" "Green"
                 break
+            } else {
+                Write-Color "  [DBG]   -> too old ($major.$minor < 3.10), skipping" "DarkYellow"
             }
+        } else {
+            Write-Color "  [DBG]   -> version string not recognised, skipping" "DarkYellow"
         }
-    } catch {}
+    } catch {
+        Write-Color "  [DBG]   -> exception: $_" "Red"
+    }
 }
 
 # ── Auto-install Python 3.12 via winget if not found ──────────────────────────
