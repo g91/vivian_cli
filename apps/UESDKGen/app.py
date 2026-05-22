@@ -13,6 +13,8 @@ from __future__ import annotations
 import datetime
 import io
 import json
+import os
+import re
 import pathlib
 import threading
 import time
@@ -26,6 +28,7 @@ try:
     from .reader     import UE3Reader, UE4Reader, PatternScanner, find_process_event
     from .profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE, ALL_SIGNATURES, ENGINE_DEFAULTS
     from .codegen    import generate_sdk
+    from .sdk_gen    import generate_sdk_files, LAYOUTS as SDK_LAYOUTS
     from .bruteforce import BruteForcer
 except ImportError:
     from theme      import C, apply_theme          # type: ignore[no-redef]
@@ -34,6 +37,7 @@ except ImportError:
     from reader     import UE3Reader, UE4Reader, PatternScanner, find_process_event  # type: ignore[no-redef]
     from profiles   import GAME_PROFILES, PROFILE_KEYS, DEFAULT_PROFILE, ALL_SIGNATURES, ENGINE_DEFAULTS  # type: ignore[no-redef]
     from codegen    import generate_sdk            # type: ignore[no-redef]
+    from sdk_gen    import generate_sdk_files, LAYOUTS as SDK_LAYOUTS  # type: ignore[no-redef]
     from bruteforce import BruteForcer             # type: ignore[no-redef]
 
 
@@ -79,8 +83,11 @@ class UESDKGenApp(tk.Tk):
         self._custom_procs: List[Tuple[int, str]] = []
 
         # ── SDK tab variables ─────────────────────────────────────────────
-        self._var_sdk_lang   = tk.StringVar(value="cpp")   # cpp|python
-        self._var_sdk_target = tk.StringVar(value="both")  # native|dma|both
+        self._var_sdk_lang      = tk.StringVar(value="cpp")   # cpp|python
+        self._var_sdk_target    = tk.StringVar(value="both")  # native|dma|both
+        self._var_sdk_outdir    = tk.StringVar(value=os.path.expanduser("~/Desktop"))
+        self._var_sdk_gamename  = tk.StringVar(value="UnknownGame")
+        self._var_sdk_gameshort = tk.StringVar(value="UNK")
 
         self._build_ui()
         self._refresh_procs()
@@ -608,32 +615,63 @@ class UESDKGenApp(tk.Tk):
         ttk.Button(act_row, text="Export Game Pack…",
                    command=self._export_pack).pack(side="left")
 
-    # ── SDK tab ──────────────────────────────────────────────────────────
+    # ── SDK Output tab ───────────────────────────────────────────────────
 
     def _build_sdk_tab(self) -> None:
-        top = ttk.Frame(self._tab_sdk, padding=(6, 4, 6, 0))
-        top.pack(fill="x")
-        for text, cmd in [
-            ("Generate SDK", self._generate_sdk),
-            ("Copy All",     self._sdk_copy),
-            ("Save...",      self._sdk_save),
-        ]:
-            ttk.Button(top, text=text, command=cmd).pack(side="left", padx=2)
+        # ── row 0: action buttons ─────────────────────────────────────────
+        row0 = ttk.Frame(self._tab_sdk, padding=(6, 4, 6, 0))
+        row0.pack(fill="x")
+        ttk.Button(row0, text="Generate C++ SDK Files",
+                   command=self._generate_sdk_files).pack(side="left", padx=2)
+        ttk.Button(row0, text="Generate Inline SDK",
+                   command=self._generate_sdk).pack(side="left", padx=2)
+        ttk.Button(row0, text="Copy All",
+                   command=self._sdk_copy).pack(side="left", padx=2)
+        ttk.Button(row0, text="Save...",
+                   command=self._sdk_save).pack(side="left", padx=2)
 
-        tk.Label(top, text="    Language:",
+        # ── row 1: output directory picker ───────────────────────────────
+        row1 = ttk.Frame(self._tab_sdk, padding=(6, 2, 6, 0))
+        row1.pack(fill="x")
+        tk.Label(row1, text="Output Dir:",
+                 bg=C["base"], fg=C["subtext0"],
+                 font=("Consolas", 9)).pack(side="left")
+        ttk.Entry(row1, textvariable=self._var_sdk_outdir,
+                  width=60).pack(side="left", padx=4)
+        ttk.Button(row1, text="Browse…",
+                   command=self._sdk_browse_outdir).pack(side="left")
+
+        # ── row 2: game name / short name overrides ───────────────────────
+        row2 = ttk.Frame(self._tab_sdk, padding=(6, 2, 6, 0))
+        row2.pack(fill="x")
+        tk.Label(row2, text="Game Name:",
+                 bg=C["base"], fg=C["subtext0"],
+                 font=("Consolas", 9)).pack(side="left")
+        ttk.Entry(row2, textvariable=self._var_sdk_gamename,
+                  width=28).pack(side="left", padx=4)
+        tk.Label(row2, text="Short:",
+                 bg=C["base"], fg=C["subtext0"],
+                 font=("Consolas", 9)).pack(side="left")
+        ttk.Entry(row2, textvariable=self._var_sdk_gameshort,
+                  width=10).pack(side="left", padx=4)
+
+        # ── row 3: inline-SDK options (language / target) ─────────────────
+        row3 = ttk.Frame(self._tab_sdk, padding=(6, 2, 6, 0))
+        row3.pack(fill="x")
+        tk.Label(row3, text="Inline lang:",
                  bg=C["base"], fg=C["subtext0"],
                  font=("Consolas", 9)).pack(side="left")
         for val, lbl in [("cpp", "C++"), ("python", "Python")]:
-            ttk.Radiobutton(top, text=lbl, variable=self._var_sdk_lang,
+            ttk.Radiobutton(row3, text=lbl, variable=self._var_sdk_lang,
                             value=val).pack(side="left", padx=2)
-
-        tk.Label(top, text="   Target:",
+        tk.Label(row3, text="   Target:",
                  bg=C["base"], fg=C["subtext0"],
                  font=("Consolas", 9)).pack(side="left")
         for val, lbl in [("native", "Native"), ("dma", "DMA"), ("both", "Both")]:
-            ttk.Radiobutton(top, text=lbl, variable=self._var_sdk_target,
+            ttk.Radiobutton(row3, text=lbl, variable=self._var_sdk_target,
                             value=val).pack(side="left", padx=2)
 
+        # ── text area ─────────────────────────────────────────────────────
         f = ttk.Frame(self._tab_sdk, padding=6)
         f.pack(fill="both", expand=True)
         self._sdk_text = tk.Text(
@@ -649,9 +687,17 @@ class UESDKGenApp(tk.Tk):
         sdk_sbx.grid(row=1, column=0, sticky="ew")
         f.rowconfigure(0, weight=1); f.columnconfigure(0, weight=1)
         self._sdk_text.insert("end",
-            "// UE3 SDK Generator\n"
-            "// Dump GNames and GObjects first, then click Generate SDK.\n"
-            "// Select Language (C++/Python) and Target (Native/DMA/Both).\n")
+            "// UESDKGen — SDK Output\n"
+            "//\n"
+            "// ● 'Generate C++ SDK Files' — walks the live object tree and writes\n"
+            "//   per-package .hpp + .cpp files to the Output Dir. Requires GNames\n"
+            "//   and GObjects to be dumped first.\n"
+            "//\n"
+            "// ● 'Generate Inline SDK' — produces a single-file C++/Python skeleton\n"
+            "//   from the current dump (no file I/O needed).\n"
+            "//\n"
+            "// Supported engines: UE1, UE2, UE3  (32-bit TArray GObjects)\n"
+            "// UE4 support: planned.\n")
 
     # ── Log tab ──────────────────────────────────────────────────────────
 
@@ -711,6 +757,11 @@ class UESDKGenApp(tk.Tk):
         self._set_status(f"Profile: {prof['name']}  ({prof.get('notes','')})")
         self._log(f"[*] Profile loaded: {key} — {prof['name']}")
         self._update_ue_badge(prof.get("ue_version", "UE3"))
+        # Auto-fill SDK fields
+        friendly = prof.get("name", key)
+        self._var_sdk_gamename.set(friendly)
+        self._var_sdk_gameshort.set(
+            re.sub(r'[^A-Za-z0-9]', '', key)[:8] or key[:8])
 
     _UE_BADGE_COLORS = {
         "UE1": ("#1e1e2e", "#a6e3a1"),  # green
@@ -1705,6 +1756,7 @@ class UESDKGenApp(tk.Tk):
 
 
     def _generate_sdk(self) -> None:
+        """Inline (single-file) SDK generation — keeps existing behaviour."""
         if not self._names or not self._objects:
             messagebox.showinfo("Nothing to generate",
                 "Dump GNames and GObjects first.")
@@ -1730,12 +1782,110 @@ class UESDKGenApp(tk.Tk):
 
         lines = content.count("\n")
         self._set_status(
-            f"SDK generated (lang={cfg['sdk_lang']} target={cfg['sdk_target']}) "
+            f"Inline SDK generated (lang={cfg['sdk_lang']} target={cfg['sdk_target']}) "
             f"— {lines:,} lines")
         self._log(
-            f"[+] SDK: lang={cfg['sdk_lang']}  target={cfg['sdk_target']}  "
+            f"[+] Inline SDK: lang={cfg['sdk_lang']}  target={cfg['sdk_target']}  "
             f"lines={lines}")
         self._nb.select(self._tab_sdk)
+
+    def _sdk_browse_outdir(self) -> None:
+        d = filedialog.askdirectory(title="Select SDK output directory")
+        if d:
+            self._var_sdk_outdir.set(d)
+
+    def _generate_sdk_files(self) -> None:
+        """Full C++ SDK generation — writes per-package .hpp/.cpp files to disk."""
+        if not self._names or not self._objects:
+            messagebox.showinfo("Nothing to generate",
+                "Dump GNames and GObjects first, then Generate C++ SDK Files.")
+            return
+        if not self._backend:
+            messagebox.showinfo("Not attached",
+                "Attach to a process first (the generator needs live memory reads).")
+            return
+
+        out_dir    = self._var_sdk_outdir.get().strip() or os.path.expanduser("~/Desktop")
+        game_name  = self._var_sdk_gamename.get().strip()  or "UnknownGame"
+        game_short = self._var_sdk_gameshort.get().strip() or "UNK"
+
+        # Determine UE version from current profile
+        key    = self._var_profile.get()
+        prof   = GAME_PROFILES.get(key, {})
+        ue_ver = prof.get("ue_version", "UE3")
+
+        if ue_ver == "UE4":
+            messagebox.showinfo(
+                "UE4 not supported yet",
+                "Full SDK file generation for UE4 is not yet implemented.\n"
+                "Use 'Generate Inline SDK' for a quick header skeleton.")
+            return
+
+        # Auto-fill game name from profile if still at default
+        if game_name == "UnknownGame" and key != "CUSTOM":
+            friendly = prof.get("name", key)
+            self._var_sdk_gamename.set(friendly)
+            game_name = friendly
+            self._var_sdk_gameshort.set(re.sub(r'[^A-Z0-9]', '', key.upper())[:6] or "UNK")
+            game_short = self._var_sdk_gameshort.get()
+
+        # Disable button during generation to prevent double-click
+        self._set_status(f"SDK: building C++ files for {game_name} ({ue_ver})…")
+        self._log(f"[*] SDK generation started: {game_name} ({ue_ver}) → {out_dir}")
+        self._nb.select(self._tab_sdk)
+
+        # Update the text widget with a running log
+        self._sdk_text.config(state="normal")
+        self._sdk_text.delete("1.0", "end")
+        self._sdk_text.config(state="disabled")
+
+        backend    = self._backend
+        names      = dict(self._names)
+        objects    = list(self._objects)
+
+        def _progress(msg: str) -> None:
+            self.after(0, lambda m=msg: self._sdk_append(m))
+            self.after(0, lambda m=msg: self._set_status(m))
+
+        def _work() -> None:
+            try:
+                n_files, n_pkgs = generate_sdk_files(
+                    backend   = backend,
+                    ue_ver    = ue_ver,
+                    names     = names,
+                    objects   = objects,
+                    game_name = game_name,
+                    game_short= game_short,
+                    out_dir   = out_dir,
+                    progress_cb = _progress,
+                )
+                def _done(f=n_files, p=n_pkgs):
+                    self._set_status(
+                        f"[+] SDK done — {f} files, {p} packages → {out_dir}")
+                    self._log(
+                        f"[+] C++ SDK: {f} files, {p} packages → {out_dir}")
+                    messagebox.showinfo(
+                        "SDK Generation Complete",
+                        f"Generated {f} files across {p} packages.\n\n"
+                        f"Output: {os.path.join(out_dir, game_name)}")
+                self.after(0, _done)
+            except Exception as exc:  # noqa: BLE001
+                import traceback
+                tb = traceback.format_exc()
+                def _err(e=str(exc), t=tb):
+                    self._log(f"[!] SDK generation error: {e}")
+                    self._sdk_append(f"ERROR: {e}\n{t}")
+                    self._set_status(f"[!] SDK error: {e}")
+                self.after(0, _err)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _sdk_append(self, msg: str) -> None:
+        """Append a line to the SDK text widget (main-thread only)."""
+        self._sdk_text.config(state="normal")
+        self._sdk_text.insert("end", msg + "\n")
+        self._sdk_text.see("end")
+        self._sdk_text.config(state="disabled")
 
     def _sdk_copy(self) -> None:
         self.clipboard_clear()
