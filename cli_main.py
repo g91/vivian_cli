@@ -1097,6 +1097,9 @@ class VivianCLI:
         elif cmd_name == "btw":
             from .commands.btw.btw import btwMessage
             print(await self._invoke_local_command(btwMessage, args))
+        elif cmd_name == "app":
+            from .commands.app import call as appCommand
+            print(await self._invoke_local_command(appCommand, args))
         elif cmd_name == "advisor":
             from .commands.advisor import advisorInfo
             print(await self._invoke_local_command(advisorInfo, args))
