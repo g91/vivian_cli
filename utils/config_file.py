@@ -104,18 +104,12 @@ def save_config(config: dict[str, Any]) -> None:
 
 
 def is_first_launch() -> bool:
-    """Return True if no config file exists yet or setup_complete is not set.
+    """Return True only when no config file exists yet.
 
-    This is the trigger for the first-launch setup wizard.
+    The setup wizard is skipped whenever ~/.vivian/config.json is present,
+    regardless of whether setup_complete is set inside it.
     """
-    if not CONFIG_FILE.exists():
-        return True
-    try:
-        with open(CONFIG_FILE) as f:
-            data = json.load(f)
-        return not data.get("setup_complete", False)
-    except (json.JSONDecodeError, OSError):
-        return True
+    return not CONFIG_FILE.exists()
 
 
 def write_initial_config(
