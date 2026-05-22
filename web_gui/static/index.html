@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Vivian IDE</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" data-name="vs/editor/editor.main"
+      href="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/editor/editor.main.css">
+</head>
+<body>
+
+<div id="app">
+  <!-- Activity bar (far left) -->
+  <nav id="activity-bar" aria-label="Activity bar">
+    <button class="act" data-page="explorer" title="Explorer">☰</button>
+    <button class="act" data-page="search" title="Search">🔍</button>
+    <button class="act" data-page="scm" title="Source Control">⚡</button>
+    <button class="act" data-page="run" title="Run">▶</button>
+    <button class="act" data-page="extensions" title="Extensions">⧉</button>
+    <div class="spacer"></div>
+    <button class="act" data-page="settings" title="Settings">⚙</button>
+  </nav>
+
+  <!-- Sidebar (stacked pages) -->
+  <aside id="sidebar">
+    <section class="page" id="page-explorer">
+      <header class="ph">EXPLORER  <span class="ph-actions">
+        <button class="link" id="btn-open-folder" title="Set workspace root">📁</button>
+      </span></header>
+      <div class="path-line" id="workspace-path"></div>
+      <div class="tree" id="file-tree"></div>
+    </section>
+
+    <section class="page hidden" id="page-search">
+      <header class="ph">SEARCH</header>
+      <div class="pad">
+        <input id="search-q" placeholder="Search across workspace…">
+        <div class="flags">
+          <label><input type="checkbox" id="search-case"> <span>Aa</span></label>
+          <label><input type="checkbox" id="search-word"> <span>ab</span></label>
+          <label><input type="checkbox" id="search-regex"> <span>.*</span></label>
+        </div>
+        <input id="search-include" placeholder="Include (regex)">
+        <input id="search-exclude" placeholder="Exclude (regex)">
+        <button id="search-go" class="btn">Search</button>
+        <div class="hint" id="search-status"></div>
+      </div>
+      <div class="tree" id="search-results"></div>
+    </section>
+
+    <section class="page hidden" id="page-scm">
+      <header class="ph">SOURCE CONTROL  <span class="ph-actions">
+        <button class="link" id="scm-refresh" title="Refresh">⟳</button>
+      </span></header>
+      <div class="pad">
+        <div class="branch-line" id="scm-branch">(not a git repository)</div>
+        <div class="row">
+          <button class="btn small" data-git="pull">Pull</button>
+          <button class="btn small" data-git="push">Push</button>
+          <button class="btn small" data-git="fetch">Fetch</button>
+          <button class="btn small" id="scm-merge">Merge…</button>
+        </div>
+        <textarea id="scm-msg" placeholder="Commit message…" rows="3"></textarea>
+        <div class="row">
+          <button class="btn small" id="scm-commit">Commit</button>
+          <button class="btn small" id="scm-commit-push">Commit &amp; Push</button>
+        </div>
+      </div>
+      <header class="ph sub" id="scm-staged-header">STAGED CHANGES</header>
+      <div class="tree" id="scm-staged"></div>
+      <header class="ph sub" id="scm-changes-header">CHANGES</header>
+      <div class="tree" id="scm-changes"></div>
+    </section>
+
+    <section class="page hidden" id="page-run">
+      <header class="ph">RUN AND DEBUG</header>
+      <div class="pad">
+        <div class="hint" id="run-target">No runnable target.</div>
+        <label class="rb"><input type="radio" name="run-mode" value="script" checked>
+          Run script (interpreter)</label>
+        <label class="rb"><input type="radio" name="run-mode" value="binary">
+          Run compiled binary</label>
+        <label class="rb"><input type="radio" name="run-mode" value="custom">
+          Custom command</label>
+        <input id="run-custom" placeholder="e.g. python3 -m myapp --debug" disabled>
+        <input id="run-args" placeholder="(optional) arguments">
+        <div class="row">
+          <button class="btn small" id="run-go">▶ Run</button>
+          <button class="btn small" id="run-stop">◼ Stop</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="page hidden" id="page-extensions">
+      <header class="ph">EXTENSIONS</header>
+      <div class="pad">
+        <div class="hint">
+          Web plugins are JavaScript modules registered via the
+          <code>vivian.registerPlugin</code> API. Open the browser console for
+          a demo, or drop a <code>.js</code> file alongside this page that
+          attaches to <code>window.VivianPlugins</code>.
+        </div>
+        <button class="btn small" id="reload-plugins">Reload</button>
+        <ul id="plugin-list" class="plain"></ul>
+      </div>
+    </section>
+
+    <section class="page hidden" id="page-settings">
+      <header class="ph">SETTINGS</header>
+      <div class="pad">
+        <label>Font size <input id="set-font" type="number" min="8" max="32" value="13"></label>
+        <label class="rb"><input type="checkbox" id="set-minimap" checked> Editor minimap</label>
+        <label class="rb"><input type="checkbox" id="set-wordwrap"> Word wrap</label>
+        <label class="rb"><input type="checkbox" id="config-employee"> Employee access</label>
+        <label>Default chat mode
+          <select id="config-default-mode"></select>
+        </label>
+        <label class="rb"><input type="checkbox" id="config-show-internal"> Show internal modes</label>
+        <div class="hint" id="config-path"></div>
+        <label>GUI chat config JSON
+          <textarea id="config-json" rows="14" spellcheck="false"></textarea>
+        </label>
+        <div class="row">
+          <button id="config-reload" class="btn small">Reload Config</button>
+          <button id="config-save" class="btn small">Save Config</button>
+        </div>
+        <div class="hint" id="config-status"></div>
+        <div class="hint">Web Serial works only in Chromium-based browsers over HTTPS or localhost.</div>
+      </div>
+    </section>
+  </aside>
+
+  <!-- Main column: tabs + editor + output dock -->
+  <div id="center">
+    <div id="tabbar"></div>
+    <div id="editor-area">
+      <div id="welcome">
+        <h1>Vivian</h1>
+        <div class="subtitle">Editing evolved · with AI · in your browser</div>
+        <div class="cols">
+          <div>
+            <h3>Start</h3>
+            <a href="#" id="welcome-new">New File…</a><br>
+            <a href="#" id="welcome-open">Open File…</a><br>
+            <a href="#" id="welcome-folder">Open Folder…</a>
+          </div>
+          <div>
+            <h3>Shortcuts</h3>
+            <div class="kb">Ctrl + S <span>Save</span></div>
+            <div class="kb">Ctrl + P <span>Quick open</span></div>
+            <div class="kb">Ctrl + Shift + F <span>Find in files</span></div>
+            <div class="kb">Ctrl + Shift + A <span>Toggle AI panel</span></div>
+          </div>
+        </div>
+      </div>
+      <div id="monaco-host"></div>
+    </div>
+    <div id="output-dock" class="hidden">
+      <header>
+        <span id="output-title">OUTPUT</span>
+        <span class="spacer"></span>
+        <button class="link" id="output-clear">Clear</button>
+        <button class="link" id="output-stop">Stop</button>
+        <button class="link" id="output-close">✕</button>
+      </header>
+      <pre id="output-body"></pre>
+      <div id="output-input-row" class="hidden">
+        <input id="output-input" placeholder="Monitor input — Enter sends, Ctrl+] exits">
+      </div>
+    </div>
+  </div>
+
+  <!-- AI panel (right) -->
+  <aside id="ai-panel">
+    <header class="ph">VIVIAN AI
+      <span class="ph-actions">
+        <button class="link" id="ai-stop" title="Interrupt">◼</button>
+      </span>
+    </header>
+    <div id="ai-transcript"></div>
+    <div id="ai-input-row">
+      <div id="ai-mode-row">
+        <label for="ai-mode">Mode</label>
+        <select id="ai-mode"></select>
+      </div>
+      <div id="ai-thinking" class="hidden">
+        <span>Thinking</span><span class="dt"></span><span class="dt"></span><span class="dt"></span>
+      </div>
+      <textarea id="ai-input" rows="2" placeholder="Ask Vivian… (Enter to send, Shift+Enter newline)"></textarea>
+      <div id="ai-toolbar">
+        <label id="ai-include-label" title="Include the currently open file with your message">
+          <input type="checkbox" id="ai-include-file">
+          <span id="ai-include-name">Include open file</span>
+        </label>
+        <button id="ai-send" class="btn">Send</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Status bar -->
+  <footer id="status-bar">
+    <span id="sb-branch">⎇ —</span>
+    <span id="sb-problems">ⓧ 0  ⚠ 0</span>
+    <span class="spacer"></span>
+    <!-- ESP-IDF block (hidden unless detected) -->
+    <span id="sb-esp" class="hidden">
+      <select id="esp-target" title="ESP32 target chip"></select>
+      <button class="sb-btn" id="esp-build">⚙ <span id="esp-build-label">Build</span></button>
+      <button class="sb-btn" id="esp-flash">⚡ Flash ▾</button>
+      <div id="esp-flash-menu" class="menu hidden">
+        <button data-method="uart">UART (serial)</button>
+        <button data-method="jtag">JTAG (OpenOCD)</button>
+        <button data-method="dfu">DFU (USB)</button>
+        <hr>
+        <button data-method="webserial">Web Serial (browser)</button>
+      </div>
+      <button class="sb-btn" id="esp-monitor">▶ Web Serial Monitor</button>
+      <button class="sb-btn" id="esp-stop">◼</button>
+    </span>
+    <!-- Generic compiler button (when not ESP) -->
+    <button class="sb-btn hidden" id="sb-compile">⚙ <span id="sb-compile-label">Build</span></button>
+
+    <span id="sb-cursor">Ln 1, Col 1</span>
+    <span id="sb-lang">text</span>
+    <span id="sb-sep">|</span>
+    <span id="sb-tokens-in" title="Input tokens this session">↑ 0</span>
+    <span id="sb-tokens-out" title="Output tokens this session">↓ 0</span>
+    <span id="sb-cost" title="Estimated cost this session">$0.000000</span>
+    <span id="sb-ctx" title="Context window used">ctx 0%</span>
+    <span id="sb-resp-time" title="Last AI response time"></span>
+  </footer>
+</div>
+
+<!-- Serial port picker (server-side bridge, used when Web Serial isn't available) -->
+<div id="serial-modal" class="modal hidden">
+  <div class="modal-card">
+    <h3>Open serial port</h3>
+    <p class="hint">Web Serial isn't available in this browser — using the
+       server-side bridge (works in Firefox/Safari). Requires
+       <code>pip install pyserial</code> on the server.</p>
+    <label>Port
+      <select id="serial-port"></select>
+    </label>
+    <label>Baud rate
+      <input id="serial-baud" type="number" value="115200">
+    </label>
+    <div class="row">
+      <button class="btn small" id="serial-cancel">Cancel</button>
+      <button class="btn small" id="serial-refresh">Refresh</button>
+      <button class="btn" id="serial-open">Open</button>
+    </div>
+    <div class="hint" id="serial-error"></div>
+  </div>
+</div>
+
+<!-- Monaco loader (CDN) -->
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+<script>
+  // Configure Monaco's AMD loader before our app uses it.
+  require.config({ paths: { vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs" } });
+  window.__monacoReady = new Promise(resolve => {
+    require(["vs/editor/editor.main"], () => resolve());
+  });
+</script>
+<script src="/static/app.js"></script>
+</body>
+</html>

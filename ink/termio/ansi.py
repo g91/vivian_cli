@@ -1,0 +1,5 @@
+"""Port of src/ink/termio/ansi.ts."""
+BEL = "\x07"
+ESC = "\x1b"
+SEP = ";"
+ST = "\x1b\\"

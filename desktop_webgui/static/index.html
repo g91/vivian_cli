@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vivian Desktop</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Scanline overlay -->
+  <div class="scanlines" aria-hidden="true"></div>
+
+  <!-- Desktop surface -->
+  <div id="desktop">
+
+    <!-- Desktop icons (populated by app.js) -->
+    <div id="icon-layer"></div>
+
+    <!-- Selection rubber-band -->
+    <div id="selection-box"></div>
+
+  </div>
+
+  <!-- Taskbar -->
+  <div id="taskbar">
+    <div id="taskbar-top-border"></div>
+
+    <button id="start-btn" title="Start">
+      <span class="start-hex">⬡</span> VIVIAN
+    </button>
+
+    <div class="taskbar-sep"></div>
+
+    <div id="task-area"></div>
+
+    <div id="tray">
+      <span class="tray-dot" style="color:var(--cyan)">●</span>
+      <span class="tray-dot" style="color:var(--pink)">●</span>
+      <span class="tray-dot" style="color:var(--purple)">●</span>
+      <span id="clock"></span>
+    </div>
+  </div>
+
+  <!-- Start Menu -->
+  <div id="start-menu" class="hidden">
+    <div id="start-menu-header">
+      <span class="start-menu-logo">🤖 VIVIAN</span>
+      <span class="start-menu-ver">v1.0</span>
+    </div>
+    <div class="start-menu-sep"></div>
+    <ul id="start-menu-list">
+      <li data-action="chat"     data-color="cyan"  >💬 Chat with Vivian</li>
+      <li data-action="skills"   data-color="purple">✦  Skills Manager</li>
+      <li data-action="ide"      data-color="cyan"  >🖥️  IDE / Web Editor</li>
+      <li data-action="browser"  data-color="pink"  >🌐 Web Browser</li>
+      <li data-action="files"    data-color="yellow">📁 Files</li>
+      <li data-action="terminal" data-color="pink"  >💻 Terminal</li>
+      <li data-action="editor"   data-color="purple">📝 Code Editor</li>
+      <li data-action="network"  data-color="cyan"  >🌐 Network</li>
+      <li data-action="settings" data-color="purple">⚙️  Settings</li>
+      <li class="start-menu-sep-item"></li>
+      <li data-action="lock"     data-color="dim"   >🔒 Lock</li>
+      <li data-action="shutdown" data-color="pink"  >⏻  Shut Down</li>
+    </ul>
+  </div>
+
+  <!-- Context menu -->
+  <ul id="ctx-menu" class="hidden">
+    <li data-cmd="refresh"     >⟳  Refresh</li>
+    <li data-cmd="new-window"  >🪟  New Window</li>
+    <li class="ctx-sep"></li>
+    <li data-cmd="display"     >🖥️  Display Settings</li>
+    <li data-cmd="personalize" >🎨  Personalize</li>
+  </ul>
+
+  <script src="app.js"></script>
+</body>
+</html>

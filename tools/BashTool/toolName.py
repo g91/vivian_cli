@@ -1,0 +1,3 @@
+"""BashTool name constant — mirrors src/tools/BashTool/toolName.ts"""
+# Here to break circular dependency from prompt.py
+BASH_TOOL_NAME = "Bash"

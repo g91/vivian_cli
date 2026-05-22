@@ -1,0 +1,1 @@
+"""Generated common event types."""

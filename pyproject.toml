@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vivian-cli"
+version = "1.0.0"
+description = "Vivian AI CLI — Your AI-powered terminal assistant with pentesting tools"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Vivian CLI Team"},
+]
+keywords = ["ai", "cli", "assistant", "pentest", "security", "ctf"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+    "Topic :: Software Development :: Testing",
+    "Topic :: System :: Networking",
+    "Topic :: Utilities",
+]
+
+dependencies = [
+    "prompt_toolkit>=3.0.0",
+    "httpx>=0.24.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "black>=23.0",
+    "ruff>=0.1.0",
+]
+parsecvision = [
+    "opencv-python>=4.8.0",
+    "mss>=9.0.0",
+    "Pillow>=10.0.0",
+    "keyboard>=0.13.5",
+    "numpy>=1.24.0",
+]
+dma = [
+    "memprocfs>=0.0.1",
+    "numpy>=1.24.0",
+]
+
+[project.scripts]
+vivian = "vivian_cli.cli_main:run"
+ai = "vivian_cli.cli_main:run"
+
+[project.urls]
+Homepage = "https://github.com/vivian-ai/vivian-cli"
+Repository = "https://github.com/vivian-ai/vivian-cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vivian_cli*"]
+exclude = ["*__pycache__*", "*.pyc"]
+
+[tool.setuptools.package-data]
+"*" = ["**/*.py", "**/*.json", "**/*.yaml", "**/*.yml", "**/*.md"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

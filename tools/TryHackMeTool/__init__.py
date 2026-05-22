@@ -1,0 +1,1 @@
+"""TryHackMeTool package."""

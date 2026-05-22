@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vivian Skills Manager</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --cyan:   #00ffe7;
+    --pink:   #ff2d78;
+    --purple: #a020f0;
+    --yellow: #ffe600;
+    --green:  #39ff14;
+    --bg:     #0a0a0f;
+    --bg2:    #0e0e1a;
+    --bg3:    #13131f;
+    --dim:    #3a3a5a;
+    --text:   #d0d0f0;
+  }
+
+  html, body {
+    height: 100%;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 13px;
+    background: var(--bg);
+    color: var(--text);
+    overflow: hidden;
+  }
+
+  #app { display: flex; flex-direction: column; height: 100%; }
+
+  /* Header */
+  #header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 14px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--purple);
+    flex-shrink: 0;
+  }
+  #header h1 {
+    font-size: 13px; color: var(--purple);
+    letter-spacing: 2px; text-transform: uppercase;
+    text-shadow: 0 0 8px var(--purple); flex: 1;
+  }
+  #count-badge {
+    font-size: 11px; padding: 2px 8px;
+    border: 1px solid var(--purple); border-radius: 10px;
+    color: var(--purple); letter-spacing: 0.5px;
+  }
+  #new-btn {
+    background: none; border: 1px solid var(--green); color: var(--green);
+    font-family: inherit; font-size: 11px; padding: 4px 12px; border-radius: 3px;
+    cursor: pointer; letter-spacing: 1px; text-transform: uppercase;
+    transition: background 0.2s;
+  }
+  #new-btn:hover { background: rgba(57,255,20,0.12); }
+
+  /* Toolbar */
+  #toolbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 14px;
+    background: var(--bg3);
+    border-bottom: 1px solid #1e1e30;
+    flex-shrink: 0;
+  }
+  #search {
+    flex: 1; background: var(--bg2); border: 1px solid var(--dim);
+    border-radius: 3px; color: var(--text); font-family: inherit;
+    font-size: 12px; padding: 5px 9px; outline: none;
+  }
+  #search:focus { border-color: var(--cyan); }
+  .filter-btn {
+    background: none; border: 1px solid var(--dim); color: var(--dim);
+    font-family: inherit; font-size: 11px; padding: 4px 10px; border-radius: 3px;
+    cursor: pointer; letter-spacing: 0.5px; transition: all 0.15s;
+  }
+  .filter-btn.active { border-color: var(--cyan); color: var(--cyan); background: rgba(0,255,231,0.07); }
+
+  /* List */
+  #list-wrap { flex: 1; overflow-y: auto; padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; }
+  #list-wrap::-webkit-scrollbar { width: 5px; }
+  #list-wrap::-webkit-scrollbar-thumb { background: var(--dim); border-radius: 3px; }
+
+  .skill-row {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 10px 12px;
+    background: var(--bg2);
+    border: 1px solid #1e1e30;
+    border-left: 3px solid var(--dim);
+    border-radius: 3px;
+    transition: border-color 0.2s;
+  }
+  .skill-row.enabled  { border-left-color: var(--cyan); }
+  .skill-row.disabled { opacity: 0.48; }
+
+  .skill-info { flex: 1; min-width: 0; }
+  .skill-name {
+    font-size: 13px; color: var(--cyan);
+    letter-spacing: 0.5px; margin-bottom: 2px;
+  }
+  .skill-row.disabled .skill-name { color: var(--dim); }
+  .skill-desc { font-size: 11px; color: #8080a0; line-height: 1.4; }
+  .skill-meta {
+    display: flex; gap: 6px; margin-top: 5px; flex-wrap: wrap;
+  }
+  .tag {
+    font-size: 10px; padding: 1px 6px; border-radius: 8px;
+    border: 1px solid; letter-spacing: 0.3px;
+  }
+  .tag.bundled  { color: var(--yellow); border-color: var(--yellow); }
+  .tag.custom   { color: var(--green);  border-color: var(--green);  }
+  .tag.tool     { color: var(--cyan);   border-color: #1a3a3a; background: rgba(0,255,231,0.05); }
+  .tag.alias    { color: #6080a0;       border-color: #2a3a4a; }
+  .tag.model    { color: var(--purple); border-color: #2a1a3a; }
+  .tag.dim      { color: #5050708; border-color: #2a2a3a; }
+
+  /* Toggle switch */
+  .toggle-wrap { display: flex; align-items: center; gap: 6px; flex-shrink: 0; padding-top: 1px; }
+  .toggle {
+    position: relative; width: 36px; height: 20px;
+    cursor: pointer; flex-shrink: 0;
+  }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute; inset: 0;
+    background: #2a2a3a; border: 1px solid var(--dim);
+    border-radius: 20px; transition: background 0.2s;
+  }
+  .slider::before {
+    content: ""; position: absolute;
+    width: 14px; height: 14px; left: 2px; bottom: 2px;
+    background: var(--dim); border-radius: 50%;
+    transition: transform 0.2s, background 0.2s;
+  }
+  .toggle input:checked + .slider { background: rgba(0,255,231,0.15); border-color: var(--cyan); }
+  .toggle input:checked + .slider::before { transform: translateX(16px); background: var(--cyan); }
+
+  .skill-actions { display: flex; gap: 4px; flex-shrink: 0; }
+  .icon-btn {
+    background: none; border: 1px solid var(--dim); color: var(--dim);
+    font-size: 11px; padding: 3px 7px; border-radius: 3px; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .icon-btn.edit:hover   { border-color: var(--yellow); color: var(--yellow); }
+  .icon-btn.delete:hover { border-color: var(--pink);   color: var(--pink);   }
+
+  /* Empty state */
+  #empty { display: none; text-align: center; padding: 40px; color: var(--dim); font-size: 12px; }
+
+  /* ── New / Edit Modal ── */
+  #modal-overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.75); z-index: 9999;
+    align-items: center; justify-content: center;
+  }
+  #modal-overlay.open { display: flex; }
+  #modal {
+    background: var(--bg2);
+    border: 1px solid var(--purple);
+    border-radius: 4px;
+    box-shadow: 0 0 30px rgba(160,32,240,0.3);
+    width: min(560px, 95vw);
+    max-height: 90vh;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  #modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px;
+    background: #13102a;
+    border-bottom: 1px solid var(--purple);
+    flex-shrink: 0;
+  }
+  #modal-title { color: var(--purple); font-size: 12px; letter-spacing: 2px; text-transform: uppercase; }
+  #modal-close {
+    background: none; border: none; color: var(--pink); font-size: 16px; cursor: pointer; padding: 0 4px;
+  }
+  #modal-body { padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+  #modal-body::-webkit-scrollbar { width: 5px; }
+  #modal-body::-webkit-scrollbar-thumb { background: var(--dim); border-radius: 3px; }
+
+  .form-group { display: flex; flex-direction: column; gap: 4px; }
+  .form-label { font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--purple); }
+  .form-input, .form-textarea, .form-select {
+    background: var(--bg3); border: 1px solid var(--dim);
+    border-radius: 3px; color: var(--text); font-family: inherit; font-size: 12px;
+    padding: 7px 9px; outline: none; transition: border-color 0.2s;
+  }
+  .form-input:focus, .form-textarea:focus, .form-select:focus { border-color: var(--purple); }
+  .form-textarea { resize: vertical; min-height: 100px; line-height: 1.5; }
+  .form-hint { font-size: 10px; color: var(--dim); }
+
+  #modal-footer {
+    display: flex; gap: 8px; justify-content: flex-end;
+    padding: 10px 14px;
+    border-top: 1px solid #1e1e30;
+    flex-shrink: 0;
+  }
+  .modal-btn {
+    background: none; font-family: inherit; font-size: 11px;
+    padding: 6px 16px; border-radius: 3px; cursor: pointer;
+    letter-spacing: 1px; text-transform: uppercase; transition: background 0.2s;
+  }
+  .modal-btn.cancel { border: 1px solid var(--dim); color: var(--dim); }
+  .modal-btn.cancel:hover { border-color: var(--text); color: var(--text); }
+  .modal-btn.save { border: 1px solid var(--purple); color: var(--purple); }
+  .modal-btn.save:hover { background: rgba(160,32,240,0.15); }
+
+  #toast {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: var(--bg2); border: 1px solid var(--cyan); color: var(--cyan);
+    padding: 8px 18px; border-radius: 3px; font-size: 12px; letter-spacing: 0.5px;
+    pointer-events: none; opacity: 0; transition: opacity 0.3s; z-index: 99999;
+    white-space: nowrap;
+  }
+  #toast.show { opacity: 1; }
+  #toast.error { border-color: var(--pink); color: var(--pink); }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Header -->
+  <div id="header">
+    <span>✦</span>
+    <h1>Skills Manager</h1>
+    <span id="count-badge">0 skills</span>
+    <button id="new-btn">+ New Skill</button>
+  </div>
+
+  <!-- Toolbar -->
+  <div id="toolbar">
+    <input id="search" type="text" placeholder="Search skills…" autocomplete="off" />
+    <button class="filter-btn active" data-filter="all">All</button>
+    <button class="filter-btn" data-filter="bundled">Bundled</button>
+    <button class="filter-btn" data-filter="custom">Custom</button>
+    <button class="filter-btn" data-filter="enabled">Enabled</button>
+    <button class="filter-btn" data-filter="disabled">Disabled</button>
+  </div>
+
+  <!-- List -->
+  <div id="list-wrap">
+    <div id="empty">No skills match your filter.</div>
+  </div>
+</div>
+
+<!-- Modal -->
+<div id="modal-overlay">
+  <div id="modal">
+    <div id="modal-header">
+      <span id="modal-title">New Skill</span>
+      <button id="modal-close">✕</button>
+    </div>
+    <div id="modal-body">
+      <div class="form-group">
+        <label class="form-label">Name <span style="color:var(--pink)">*</span></label>
+        <input id="f-name" class="form-input" type="text" placeholder="my-skill" autocomplete="off" />
+        <span class="form-hint">Alphanumeric, dash, underscore only. Used as the skill command name.</span>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description <span style="color:var(--pink)">*</span></label>
+        <input id="f-desc" class="form-input" type="text" placeholder="What this skill does…" autocomplete="off" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Prompt / Instructions <span style="color:var(--pink)">*</span></label>
+        <textarea id="f-prompt" class="form-textarea" placeholder="Instructions for Vivian when this skill is activated…" rows="5"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label">When to Use <span style="color:var(--dim)">(optional)</span></label>
+        <input id="f-when" class="form-input" type="text" placeholder="e.g. Use when asked to debug errors" autocomplete="off" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Argument Hint <span style="color:var(--dim)">(optional)</span></label>
+        <input id="f-argHint" class="form-input" type="text" placeholder="e.g. [file or description]" autocomplete="off" />
+        <span class="form-hint">Shown in autocomplete as the expected argument.</span>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Allowed Tools <span style="color:var(--dim)">(optional)</span></label>
+        <input id="f-tools" class="form-input" type="text" placeholder="Read, Write, Bash, Grep…" autocomplete="off" />
+        <span class="form-hint">Comma-separated tool names this skill may use.</span>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Model Override <span style="color:var(--dim)">(optional)</span></label>
+        <input id="f-model" class="form-input" type="text" placeholder="e.g. claude-opus-4-5" autocomplete="off" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Save Location</label>
+        <select id="f-scope" class="form-select">
+          <option value="user">User (~/.vivian/skills/) — available in all projects</option>
+          <option value="project">Project (.vivian/skills/) — this workspace only</option>
+        </select>
+      </div>
+    </div>
+    <div id="modal-footer">
+      <button class="modal-btn cancel" id="modal-cancel">Cancel</button>
+      <button class="modal-btn save"   id="modal-save">Save Skill</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let _skills    = [];
+let _filter    = "all";
+let _search    = "";
+let _editName  = null;   // name of skill being edited (null = new)
+
+// ── Load ──────────────────────────────────────────────────────────────────────
+function load() {
+  fetch("/api/skills")
+    .then(r => r.json())
+    .then(d => {
+      _skills = d.skills || [];
+      render();
+    })
+    .catch(() => toast("Failed to load skills", true));
+}
+load();
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function visible() {
+  return _skills.filter(s => {
+    if (_filter === "bundled"  && s.source !== "bundled") return false;
+    if (_filter === "custom"   && s.source !== "custom")  return false;
+    if (_filter === "enabled"  && !s.is_enabled)           return false;
+    if (_filter === "disabled" && s.is_enabled)            return false;
+    if (_search) {
+      const q = _search.toLowerCase();
+      if (!s.name.toLowerCase().includes(q) && !s.description.toLowerCase().includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function render() {
+  const list = document.getElementById("list-wrap");
+  const empty = document.getElementById("empty");
+  const badge = document.getElementById("count-badge");
+
+  // Remove old rows
+  list.querySelectorAll(".skill-row").forEach(el => el.remove());
+
+  badge.textContent = _skills.length + " skill" + (_skills.length !== 1 ? "s" : "");
+
+  const rows = visible();
+  empty.style.display = rows.length === 0 ? "block" : "none";
+
+  rows.forEach(skill => {
+    const row = document.createElement("div");
+    row.className = "skill-row" + (skill.is_enabled ? " enabled" : " disabled");
+    row.dataset.name = skill.name;
+
+    // Info
+    const info = document.createElement("div");
+    info.className = "skill-info";
+
+    const nm = document.createElement("div");
+    nm.className = "skill-name";
+    nm.textContent = "/" + skill.name;
+
+    const desc = document.createElement("div");
+    desc.className = "skill-desc";
+    desc.textContent = skill.description || "—";
+
+    const meta = document.createElement("div");
+    meta.className = "skill-meta";
+    const srcTag = document.createElement("span");
+    srcTag.className = "tag " + (skill.source === "custom" ? "custom" : "bundled");
+    srcTag.textContent = skill.source;
+    meta.appendChild(srcTag);
+
+    // allowed_tools tags (up to 4)
+    (skill.allowed_tools || []).slice(0, 4).forEach(t => {
+      const tt = document.createElement("span");
+      tt.className = "tag tool";
+      tt.textContent = t;
+      meta.appendChild(tt);
+    });
+
+    // model override tag
+    if (skill.model) {
+      const mt = document.createElement("span");
+      mt.className = "tag model";
+      mt.textContent = skill.model;
+      meta.appendChild(mt);
+    }
+
+    // aliases (up to 3)
+    (skill.aliases || []).slice(0, 3).forEach(a => {
+      const at = document.createElement("span");
+      at.className = "tag alias";
+      at.textContent = "/" + a;
+      meta.appendChild(at);
+    });
+
+    info.append(nm, desc, meta);
+
+    // Toggle
+    const toggleWrap = document.createElement("div");
+    toggleWrap.className = "toggle-wrap";
+    const label = document.createElement("label");
+    label.className = "toggle";
+    label.title = skill.is_enabled ? "Enabled — click to disable" : "Disabled — click to enable";
+    const inp = document.createElement("input");
+    inp.type = "checkbox";
+    inp.checked = skill.is_enabled;
+    inp.addEventListener("change", () => toggleSkill(skill.name, inp.checked, row, inp));
+    const slider = document.createElement("span");
+    slider.className = "slider";
+    label.append(inp, slider);
+    toggleWrap.appendChild(label);
+
+    // Action buttons
+    const actions = document.createElement("div");
+    actions.className = "skill-actions";
+    if (skill.editable || skill.source === "custom") {
+      const editBtn = document.createElement("button");
+      editBtn.className = "icon-btn edit";
+      editBtn.title = "Edit";
+      editBtn.textContent = "✎";
+      editBtn.addEventListener("click", () => openEdit(skill));
+      actions.appendChild(editBtn);
+
+      const delBtn = document.createElement("button");
+      delBtn.className = "icon-btn delete";
+      delBtn.title = "Delete";
+      delBtn.textContent = "✕";
+      delBtn.addEventListener("click", () => deleteSkill(skill.name));
+      actions.appendChild(delBtn);
+    }
+
+    row.append(info, toggleWrap, actions);
+    list.appendChild(row);
+  });
+}
+
+// ── Toggle ────────────────────────────────────────────────────────────────────
+function toggleSkill(name, enabled, rowEl, inp) {
+  inp.disabled = true;
+  fetch("/api/skills/toggle", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, enabled }),
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      const s = _skills.find(x => x.name === name);
+      if (s) s.is_enabled = enabled;
+      rowEl.className = "skill-row" + (enabled ? " enabled" : " disabled");
+      toast(name + (enabled ? " enabled" : " disabled"));
+    } else {
+      toast(d.error || "Toggle failed", true);
+      inp.checked = !enabled;  // revert
+    }
+  })
+  .catch(() => { toast("Network error", true); inp.checked = !enabled; })
+  .finally(() => { inp.disabled = false; });
+}
+
+// ── Delete ────────────────────────────────────────────────────────────────────
+function deleteSkill(name) {
+  if (!confirm(`Delete skill "${name}"? This cannot be undone.`)) return;
+  fetch("/api/skills/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      _skills = _skills.filter(s => s.name !== name);
+      render();
+      toast(`Skill "${name}" deleted`);
+    } else {
+      toast(d.error || "Delete failed", true);
+    }
+  })
+  .catch(() => toast("Network error", true));
+}
+
+// ── Modal ─────────────────────────────────────────────────────────────────────
+function openNew() {
+  _editName = null;
+  document.getElementById("modal-title").textContent = "New Skill";
+  document.getElementById("f-name").value    = "";
+  document.getElementById("f-name").readOnly = false;
+  document.getElementById("f-desc").value    = "";
+  document.getElementById("f-prompt").value  = "";
+  document.getElementById("f-when").value    = "";
+  document.getElementById("f-argHint").value = "";
+  document.getElementById("f-tools").value   = "";
+  document.getElementById("f-model").value   = "";
+  document.getElementById("f-scope").value   = "user";
+  document.getElementById("modal-overlay").classList.add("open");
+  document.getElementById("f-name").focus();
+}
+
+function openEdit(skill) {
+  _editName = skill.name;
+  document.getElementById("modal-title").textContent = "Edit Skill — " + skill.name;
+  document.getElementById("f-name").value    = skill.name;
+  document.getElementById("f-name").readOnly = true;
+  document.getElementById("f-desc").value    = skill.description || "";
+  document.getElementById("f-prompt").value  = skill.prompt || "";
+  document.getElementById("f-when").value    = skill.when_to_use || "";
+  document.getElementById("f-argHint").value = skill.argument_hint || "";
+  document.getElementById("f-tools").value   = (skill.allowed_tools || []).join(", ");
+  document.getElementById("f-model").value   = skill.model || "";
+  document.getElementById("f-scope").value   = "user";
+  document.getElementById("modal-overlay").classList.add("open");
+  document.getElementById("f-prompt").focus();
+}
+
+function closeModal() {
+  document.getElementById("modal-overlay").classList.remove("open");
+}
+
+function saveSkill() {
+  const name         = document.getElementById("f-name").value.trim();
+  const desc         = document.getElementById("f-desc").value.trim();
+  const prompt       = document.getElementById("f-prompt").value.trim();
+  const when         = document.getElementById("f-when").value.trim();
+  const argHint      = document.getElementById("f-argHint").value.trim();
+  const toolsRaw     = document.getElementById("f-tools").value.trim();
+  const model        = document.getElementById("f-model").value.trim();
+  const scope        = document.getElementById("f-scope").value;
+
+  if (!name)   { toast("Name is required", true); return; }
+  if (!prompt) { toast("Prompt is required", true); return; }
+  if (!/^[\w\-]+$/.test(name)) { toast("Name: alphanumeric/dash/underscore only", true); return; }
+
+  const allowed_tools = toolsRaw ? toolsRaw.split(",").map(t => t.trim()).filter(Boolean) : [];
+
+  const btn = document.getElementById("modal-save");
+  btn.disabled = true;
+  btn.textContent = "Saving…";
+
+  fetch("/api/skills/create", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, description: desc, prompt,
+                           when_to_use: when, argument_hint: argHint,
+                           allowed_tools, model, scope }),
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      closeModal();
+      toast(`Skill "${name}" saved`);
+      load();  // reload full list
+    } else {
+      toast(d.error || "Save failed", true);
+    }
+  })
+  .catch(() => toast("Network error", true))
+  .finally(() => {
+    btn.disabled = false;
+    btn.textContent = "Save Skill";
+  });
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+let _toastTimer = null;
+function toast(msg, isError = false) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.className = "show" + (isError ? " error" : "");
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { el.className = ""; }, 2800);
+}
+
+// ── Event wiring ──────────────────────────────────────────────────────────────
+document.getElementById("new-btn").addEventListener("click", openNew);
+document.getElementById("modal-close").addEventListener("click", closeModal);
+document.getElementById("modal-cancel").addEventListener("click", closeModal);
+document.getElementById("modal-save").addEventListener("click", saveSkill);
+
+document.getElementById("modal-overlay").addEventListener("click", (e) => {
+  if (e.target === document.getElementById("modal-overlay")) closeModal();
+});
+
+document.querySelectorAll(".filter-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    _filter = btn.dataset.filter;
+    render();
+  });
+});
+
+document.getElementById("search").addEventListener("input", (e) => {
+  _search = e.target.value;
+  render();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeModal();
+});
+</script>
+</body>
+</html>
